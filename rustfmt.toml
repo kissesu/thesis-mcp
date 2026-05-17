@@ -1,0 +1,6 @@
+# rustfmt 配置 - stable 选项
+# 作者: Atlas.oi  日期: 2026-05-17
+edition = "2024"
+tab_spaces = 4
+max_width = 100
+newline_style = "Unix"

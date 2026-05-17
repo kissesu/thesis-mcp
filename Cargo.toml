@@ -1,0 +1,80 @@
+# thesis-mcp Cargo workspace 根配置
+# 作者: Atlas.oi
+# 日期: 2026-05-17
+# 用途: 统一管理 thesis-mcp 全部 Rust crate 的版本与编译配置
+
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+# 子 crate 共享的 package 元信息
+[workspace.package]
+edition = "2024"
+rust-version = "1.88"
+authors = ["Atlas.oi"]
+license = "MIT"
+repository = "https://github.com/Atlas-oi/thesis-mcp"
+
+# 全工程统一管理的依赖版本
+[workspace.dependencies]
+# 内部 crate：通过 path 引用，子 crate 用 thesis-types.workspace = true 引入
+thesis-types = { path = "crates/thesis-types" }
+
+# MCP 协议主框架
+rmcp = "1.7"
+
+# OOXML 处理：typed model（ooxmlsdk）+ 原始 XML 流式（quick-xml）+ DOM 备用（xot）+ XPath 诊断（xee-xpath）
+ooxmlsdk = "0.6"
+quick-xml = { version = "0.40", features = ["serialize", "encoding"] }
+xot = "0.31"
+xee-xpath = "0.1"
+
+# docx 是 zip 包
+zip = "2"
+
+# 异步运行时
+tokio = { version = "1", features = ["full"] }
+
+# 序列化
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# 唯一标识（manifest nonce）
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# 时间（manifest mtime / audit log）
+chrono = { version = "0.4", features = ["serde"] }
+
+# 哈希（docx sha256）
+sha2 = "0.10"
+
+# 16 进制编码（sha256 hex 字符串 round-trip）
+hex = "0.4"
+
+# 错误处理：库层 thiserror，应用层 anyhow
+thiserror = "2"
+anyhow = "1"
+
+# CLI（thesis-hook / thesis-mcp-server 子命令）
+clap = { version = "4", features = ["derive"] }
+
+# 日志
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# 测试辅助
+insta = "1"
+tempfile = "3"
+
+# 全工程统一的 lint 策略：开启 clippy::pedantic 但只 warn 不 deny
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# pedantic 中部分 lint 偏激进，在 thesis-mcp 场景下允许：
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+# 中文文档加 backtick 视觉割裂，且会误把中文词识别为未加 backtick 的标识符
+doc_markdown = "allow"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"

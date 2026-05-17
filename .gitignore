@@ -1,0 +1,32 @@
+# Rust 构建产物
+/target/
+**/target/
+*.rlib
+*.rmeta
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# macOS
+.DS_Store
+
+# thesis runtime 产物（manifest / audit log / 进度）
+.thesis/
+
+# 用户论文 docx 不入库（仅作为本地测试输入）
+docs/*.docx
+docs/.backups/
+
+# 快照测试临时
+**/*.snap.new
+
+# 本地环境
+.env
+.env.local
+
+# 临时备份
+*.bak
+*.swp
+*~

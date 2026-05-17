@@ -1,0 +1,5 @@
+# clippy 阈值配置（lint 开关在 Cargo.toml [workspace.lints] 中）
+# 作者: Atlas.oi  日期: 2026-05-17
+cognitive-complexity-threshold = 30
+too-many-arguments-threshold = 8
+type-complexity-threshold = 250

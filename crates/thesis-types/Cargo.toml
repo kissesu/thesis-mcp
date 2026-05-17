@@ -1,0 +1,25 @@
+# thesis-types: thesis-mcp 全工程共享类型
+# 作者: Atlas.oi  日期: 2026-05-17
+[package]
+name = "thesis-types"
+version = "0.1.0"
+description = "Shared types for thesis-mcp: RuleId / Severity / Manifest / WriteOp / AuditResult"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+hex = { workspace = true }
+
+[dev-dependencies]
+# round-trip JSON 测试只需 serde_json，已在 dependencies 中
+
+[lints]
+workspace = true
