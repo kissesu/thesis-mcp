@@ -1,0 +1,32 @@
+# thesis-audit: 论文审计核心引擎
+# 作者: Atlas.oi  日期: 2026-05-17
+[package]
+name = "thesis-audit"
+version = "0.1.0"
+description = "Core audit engine for thesis-mcp: checks OOXML docx against thesis rules"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+thesis-types = { workspace = true }
+ooxmlsdk = { workspace = true }
+quick-xml = { workspace = true }
+zip = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+insta = { workspace = true }
+
+[lints]
+workspace = true

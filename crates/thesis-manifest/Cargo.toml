@@ -1,0 +1,29 @@
+# thesis-manifest: Manifest 写读 / AuditLog JSONL 追加 / TOCTOU 验证
+# 作者: Atlas.oi  日期: 2026-05-17
+[package]
+name = "thesis-manifest"
+version = "0.1.0"
+description = "Manifest creation, atomic write, TOCTOU verification, and audit log persistence"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+thesis-types = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+uuid        = { workspace = true }
+chrono      = { workspace = true }
+sha2        = { workspace = true }
+hex         = { workspace = true }
+thiserror   = { workspace = true }
+anyhow      = { workspace = true }
+tempfile    = { workspace = true }
+
+[dev-dependencies]
+# tempfile 已在 [dependencies] 中
+
+[lints]
+workspace = true

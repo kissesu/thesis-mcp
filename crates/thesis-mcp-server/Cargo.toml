@@ -1,0 +1,53 @@
+# thesis-mcp-server/Cargo.toml
+# 作者: Atlas.oi
+# 日期: 2026-05-17
+# 用途: MCP stdio 服务主进程，通过 rmcp 暴露 init / audit / write_section / revise 四个工具
+
+[package]
+name = "thesis-mcp-server"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "thesis-mcp-server"
+path = "src/main.rs"
+
+[dependencies]
+thesis-types = { workspace = true }
+
+# MCP 框架：默认开启 server + macros + schemars
+rmcp = { version = "1.7", features = ["server", "macros", "transport-io"] }
+
+# OOXML 处理（健康检查中引用，证明 crate 可链接）
+ooxmlsdk = { workspace = true }
+
+# 工具参数的 JSON Schema 生成（必须与 rmcp 使用同一主版本 schemars 1.x）
+schemars = "1"
+
+# 序列化
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# 错误处理
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# 异步运行时
+tokio = { workspace = true }
+
+# 日志（结构化写 stderr）
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# 时间（AuditResult 时间戳）
+chrono = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true }
+
+[lints]
+workspace = true
