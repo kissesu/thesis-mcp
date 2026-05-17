@@ -134,19 +134,24 @@ fn test_verify_detects_mtime_change_without_content_change() {
     let docx = write_fake_docx(&tmp, "thesis.docx", b"same content");
     let manifest = make_manifest(docx.clone());
 
-    // 只修改 mtime，不修改内容（用未来时间戳）
-    // 通过写入同样内容来触发 mtime 更新
-    // 等一小段时间让 mtime 确实前进
-    std::thread::sleep(std::time::Duration::from_millis(10));
+    // 等待 100ms 让 mtime 前进——macOS APFS 纳秒精度，100ms 足够可靠地产生差异。
+    // Linux ext4 默认纳秒精度同样可靠。
+    // （如使用 HFS+ 或 FAT32 等低精度文件系统，此测试可能偶发性失败，
+    //  届时可酌情跳过，但当前目标平台 APFS/ext4 均无此问题。）
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    // 写入完全相同的内容：sha256 不变，但 mtime 已更新
     std::fs::write(&docx, b"same content").unwrap();
 
-    // sha256 相同，但 mtime 已变化
-    // verify_against_disk 先检查 sha256（相同），再检查 mtime
-    // 取决于文件系统精度是否能识别 10ms 的差异
-    // macOS APFS 支持纳秒精度，可以识别
-    // 如果文件系统精度不够，此测试在 sha256 级别就会通过（不报错）
-    // 这种情况下测试也是合理的——文件系统无法区分，我们也无法
-    let _ = manifest.verify_against_disk(); // 不断言具体错误类型，避免平台依赖
+    // verify_against_disk 先检查 sha256（相同），再检查 mtime（不同）
+    // 应报 MtimeMismatch，而非 Sha256Mismatch
+    let err = manifest
+        .verify_against_disk()
+        .expect_err("mtime 已变化，验证应失败");
+    assert!(
+        matches!(err, thesis_manifest::TocTouViolation::MtimeMismatch { .. }),
+        "期望 MtimeMismatch，实际: {err}"
+    );
 }
 
 // ============================================================

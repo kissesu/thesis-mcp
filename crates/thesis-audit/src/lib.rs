@@ -54,23 +54,28 @@ const AUDIT_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// 对整个 docx 执行全量规则检查。
 ///
 /// 业务流程：
-/// 1. 读取文件字节 + 计算 sha256
-/// 2. 加载文档段落
+/// 1. 读取文件字节（一次 IO）+ 计算 sha256
+/// 2. 用同一份字节加载文档段落（无二次读取，消除 TOCTOU）
 /// 3. 执行 PRIORITY 1 规则（A.1, E.5.7, E.5.8）
 /// 4. 聚合 Violation → CheckRow → AuditResult
+///
+/// # 语义约定
+/// - `passed = true` 当且仅当没有 Critical 级别的命中行
+/// - `violations_count` 只统计 Critical 命中行数（与 `passed` 同源，无歧义）
 pub fn audit_full(docx_path: &Path) -> Result<AuditResult, AuditError> {
     debug!("开始全量审计：{:?}", docx_path);
 
     // ============================================
-    // 第一步：读取文件，计算 sha256
+    // 第一步：一次性读取文件字节，计算 sha256
+    // 字节与 sha256 均来自同一次 read，保证哈希与被解析内容一致
     // ============================================
     let docx_bytes = std::fs::read(docx_path)?;
     let sha256_hex = compute_sha256(&docx_bytes);
 
     // ============================================
-    // 第二步：加载文档
+    // 第二步：从同一份字节加载文档（无需再次打开文件）
     // ============================================
-    let doc = Document::load(docx_path)?;
+    let doc = Document::load_bytes(&docx_bytes)?;
     debug!("提取段落数：{}", doc.paragraphs.len());
 
     // ============================================
@@ -94,16 +99,15 @@ pub fn audit_full(docx_path: &Path) -> Result<AuditResult, AuditError> {
 
     // ============================================
     // 第五步：构造 AuditResult
-    // passed = 没有任何 Critical 级别的违规
+    // violations_count 仅统计 Critical 命中行数；
+    // passed = violations_count == 0（语义一致，无"passed=true 但 count>0"的矛盾状态）
     // ============================================
     let violations_count = check_rows
         .iter()
-        .filter(|r| !r.passed && matches!(r.severity, Severity::Critical | Severity::Warning))
+        .filter(|r| !r.passed && matches!(r.severity, Severity::Critical))
         .count();
 
-    let passed = check_rows
-        .iter()
-        .all(|r| r.passed || !matches!(r.severity, Severity::Critical));
+    let passed = violations_count == 0;
 
     Ok(AuditResult {
         docx_path: docx_path.to_path_buf(),

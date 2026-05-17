@@ -6,12 +6,26 @@
 //! ## 并发安全策略
 //!
 //! JSONL 每行都是一个完整的 JSON 对象，以 `\n` 结尾。
-//! 在 POSIX 系统上，对于写入长度 < PIPE_BUF（通常 4096 字节）的 `O_APPEND` 写入，
-//! 内核保证原子性——多进程/线程同时 append 不会交叉覆盖。
 //!
-//! 单条 Manifest 序列化后远小于 4096 字节（实测 ~400-600 字节），
-//! 因此直接依赖 `O_APPEND` 语义，无需额外文件锁。
-//! 若未来 Manifest 字段大幅增长导致单行超过 PIPE_BUF，需改用 `flock`。
+//! **POSIX `O_APPEND` 保证的范围**：
+//! `O_APPEND` 只保证每次 `write(2)` 的**偏移量定位是原子的**（即多个进程不会写到同一位置），
+//! 但 POSIX **不保证**普通文件（regular file）的小写入具有原子性。
+//! PIPE_BUF（通常 4096 字节）的原子性承诺仅适用于**管道（pipe）和 FIFO**，
+//! 不适用于普通文件，不要混用这两个概念。
+//!
+//! **实际行为（本地文件系统）**：
+//! Linux ext4 / macOS APFS 在实现层面通过内核锁使小写入事实上是原子的，
+//! 因此在本地存储上多进程/线程并发 append 通常不会交叉覆盖。
+//! 这是**文件系统实现细节**，不是 POSIX 保证，不可跨文件系统依赖。
+//!
+//! **NFS / FUSE / 网络文件系统警告**：
+//! 若 `.thesis/audit-log.jsonl` 存储在 NFS、FUSE 挂载或其他网络文件系统上，
+//! 小写入的原子性**不再成立**，多写者可能交叉覆盖同一行。
+//! 届时应在 `write(2)` 前后加 `flock(2)` 排他锁。
+//!
+//! **当前假设**：`.thesis/` 目录位于本地文件系统（ext4 / APFS），
+//! 单条 Manifest 序列化后约 400-600 字节，远小于任何合理的块大小，
+//! 因此暂不加锁。如迁移到网络存储，必须补充 `flock` 保护。
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -60,7 +74,7 @@ impl AuditLog {
             .open(self.log_path())
             .with_context(|| format!("无法打开 audit-log: {}", self.log_path().display()))?;
 
-        // 第三步：序列化为单行 JSON + 换行，一次 write 调用（< PIPE_BUF，POSIX 原子）
+        // 第三步：序列化为单行 JSON + 换行，一次 write_all 调用（本地文件系统单块写，见模块注释）
         let mut line = serde_json::to_vec(manifest).with_context(|| "序列化 manifest 失败")?;
         line.push(b'\n');
 

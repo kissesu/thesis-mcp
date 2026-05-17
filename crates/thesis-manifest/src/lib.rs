@@ -23,14 +23,18 @@ use uuid::Uuid;
 #[derive(Debug, Error)]
 pub enum TocTouViolation {
     /// 当前 mtime 比 manifest 里记录的更新
-    #[error("docx mtime 不一致：manifest={manifest_mtime}, disk={disk_mtime}")]
+    #[error("docx mtime 不一致：path={path}, manifest={manifest_mtime}, disk={disk_mtime}")]
     MtimeMismatch {
+        /// 被检查的 docx 文件路径，方便生产调试时定位具体文件
+        path: PathBuf,
         manifest_mtime: DateTime<Utc>,
         disk_mtime: DateTime<Utc>,
     },
     /// 当前 sha256 与 manifest 里记录的不同
-    #[error("docx sha256 不一致：manifest={manifest_sha256}, disk={disk_sha256}")]
+    #[error("docx sha256 不一致：path={path}, manifest={manifest_sha256}, disk={disk_sha256}")]
     Sha256Mismatch {
+        /// 被检查的 docx 文件路径，方便生产调试时定位具体文件
+        path: PathBuf,
         manifest_sha256: String,
         disk_sha256: String,
     },
@@ -137,6 +141,8 @@ impl ManifestExt for Manifest {
         let disk_sha256 = compute_sha256_hex(&bytes);
         if disk_sha256 != self.sha256_hex {
             return Err(TocTouViolation::Sha256Mismatch {
+                // 携带路径便于生产环境日志直接定位被篡改的文件
+                path: self.docx_path.clone(),
                 manifest_sha256: self.sha256_hex.clone(),
                 disk_sha256,
             });
@@ -149,6 +155,8 @@ impl ManifestExt for Manifest {
         })?;
         if disk_mtime != self.mtime {
             return Err(TocTouViolation::MtimeMismatch {
+                // 携带路径便于生产环境日志直接定位 mtime 异常的文件
+                path: self.docx_path.clone(),
                 manifest_mtime: self.mtime,
                 disk_mtime,
             });

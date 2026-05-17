@@ -39,7 +39,7 @@ impl ThesisMcpServer {
         match run_init(&params) {
             Ok(output) => {
                 let json = serde_json::to_string_pretty(&output)
-                    .unwrap_or_else(|e| format!("{{\"error\": \"{e}\"}}"));
+                    .unwrap_or_else(|e| serde_json::json!({"error": e.to_string()}).to_string());
                 CallToolResult::success(vec![Content::text(json)])
             }
             Err(e) => {
@@ -83,7 +83,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("thesis-mcp-server 启动，版本 {}", env!("CARGO_PKG_VERSION"));
 
     // 健康检查：在当前工作目录下验证环境
-    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let cwd = std::env::current_dir()?;
     let report = health::HealthReport::check(&cwd);
     if report.all_ok {
         tracing::info!(

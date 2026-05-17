@@ -2,7 +2,7 @@
 //! @description 从 docx 文件加载并解析 OOXML 文档主体
 //!
 //! 职责：
-//! 1. 从 `&Path` 打开 docx（ooxmlsdk `WordprocessingDocument`）
+//! 1. 从字节切片构造 docx（ooxmlsdk `WordprocessingDocument`），避免二次读取
 //! 2. 提取主文档 body 中所有段落（`Paragraph`）
 //! 3. 将段落内所有 run 的文本拼合为字符串（供规则检查用）
 //! 4. 暴露结构化的 `DocParagraph` 供规则层消费
@@ -10,6 +10,7 @@
 //! @author Atlas.oi
 //! @date 2026-05-17
 
+use std::io::Cursor;
 use std::path::Path;
 
 use ooxmlsdk::parts::wordprocessing_document::WordprocessingDocument;
@@ -18,22 +19,6 @@ use ooxmlsdk::schemas::schemas_openxmlformats_org_wordprocessingml_2006_main::{
 };
 
 use crate::error::AuditError;
-
-/// 段落在文档中的位置描述，用于 `Violation::location`。
-///
-/// 格式：`body/p[{index}]`，嵌套表格中的段落格式 `tbl[i]/tr[j]/tc[k]/p[l]`
-/// 此处只处理 body 直接子段落；表格段落在 tables.rs 中处理。
-#[derive(Debug, Clone)]
-pub struct ParaLocation {
-    /// 在 body.body_choice 中的段落序号（0-indexed）
-    pub para_index: usize,
-}
-
-impl std::fmt::Display for ParaLocation {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "body/p[{}]", self.para_index)
-    }
-}
 
 /// 从 body 中提取的结构化段落。
 ///
@@ -63,19 +48,29 @@ pub struct Document {
 }
 
 impl Document {
-    /// 从 docx 路径加载文档，提取所有 body 直接段落。
+    /// 从 docx 文件路径加载文档。
+    ///
+    /// 内部将文件读入内存后调用 `load_bytes`，确保 sha256 计算与解析
+    /// 使用同一份字节，避免文件被外部修改导致的哈希不一致（TOCTOU）。
+    pub fn load(path: &Path) -> Result<Self, AuditError> {
+        let bytes = std::fs::read(path)?;
+        Self::load_bytes(&bytes)
+    }
+
+    /// 从字节切片加载文档，提取所有 body 直接段落。
     ///
     /// 业务流程：
-    /// 1. ooxmlsdk 打开 package
+    /// 1. 将字节切片包装为 `Cursor<&[u8]>`，传入 ooxmlsdk `WordprocessingDocument::new`
     /// 2. 取 main_document_part → root_element → body
     /// 3. 遍历 body_choice，匹配 BodyChoice::WP(paragraph)
     /// 4. 每个段落：拼合文本 + 提取 numPr
-    pub fn load(path: &Path) -> Result<Self, AuditError> {
+    pub fn load_bytes(bytes: &[u8]) -> Result<Self, AuditError> {
         // ============================================
-        // 第一步：用 ooxmlsdk 打开 docx package
+        // 第一步：用 ooxmlsdk 从内存字节打开 docx package
+        // Cursor<&[u8]> 实现了 Read + Seek，满足 WordprocessingDocument::new 的约束
         // ============================================
         let mut package =
-            WordprocessingDocument::new_from_file(path).map_err(AuditError::from_sdk)?;
+            WordprocessingDocument::new(Cursor::new(bytes)).map_err(AuditError::from_sdk)?;
 
         // ============================================
         // 第二步：取主文档 part 并加载根元素（Document）

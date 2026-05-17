@@ -8,7 +8,4 @@ pub mod init;
 
 // Re-export 供 main.rs 直接引用
 pub use audit::{AuditParams, StubAuditEngine, run_audit};
-// AuditEngine trait は外部 crate から参照される場合のみ re-export
-#[allow(unused_imports)]
-pub use audit::AuditEngine;
 pub use init::{InitParams, run_init};
