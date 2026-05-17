@@ -6,26 +6,42 @@
 use std::path::Path;
 
 use anyhow::Result;
-use chrono::Utc;
 use schemars::JsonSchema;
 use serde::Deserialize;
-use thesis_types::{AuditResult, CheckRow, RuleId, Severity};
+use thesis_types::AuditResult;
+
+#[cfg(test)]
+use chrono::Utc;
+#[cfg(test)]
+use thesis_types::{CheckRow, RuleId, Severity};
 
 // ─── AuditEngine 抽象层 ──────────────────────────────────────────────────────
 
 /// 审计引擎接口。
 ///
-/// 当前实现使用 `StubAuditEngine`（总是返回 PASS）。
-/// TODO L3: 当 L2.1 thesis-audit crate 落地后，替换为 `thesis_audit::RealAuditEngine`。
+/// 两个实现：
+/// - `RealAuditEngine`：调用 thesis-audit crate 的真实规则检查（生产使用）
+/// - `StubAuditEngine`：总是返回 PASS（单元测试注入用）
 pub trait AuditEngine: Send + Sync {
     fn audit_full(&self, docx_path: &Path) -> Result<AuditResult>;
 }
 
-/// 桩实现：返回固定 PASS 结果，供在 thesis-audit 未就绪时编译。
+/// 真实审计引擎：委托给 `thesis_audit::audit_full` 执行全量规则检查。
+pub struct RealAuditEngine;
+
+impl AuditEngine for RealAuditEngine {
+    fn audit_full(&self, docx_path: &Path) -> Result<AuditResult> {
+        thesis_audit::audit_full(docx_path).map_err(anyhow::Error::from)
+    }
+}
+
+/// 桩实现：返回固定 PASS 结果，供单元测试注入（不依赖真实 docx 内容）。
 ///
-/// TODO L3: replace with thesis-audit when L2.1 lands
+/// 注：仅编译进测试目标（`#[cfg(test)]`），不进入发布二进制。
+#[cfg(test)]
 pub struct StubAuditEngine;
 
+#[cfg(test)]
 impl AuditEngine for StubAuditEngine {
     fn audit_full(&self, docx_path: &Path) -> Result<AuditResult> {
         tracing::debug!(
@@ -45,6 +61,7 @@ impl AuditEngine for StubAuditEngine {
 }
 
 /// 构造一行示例自检记录（说明这是桩输出）。
+#[cfg(test)]
 fn make_stub_row() -> CheckRow {
     // 使用 A.1 作为占位规则 ID（任意有效变体均可）
     CheckRow {

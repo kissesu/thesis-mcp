@@ -56,8 +56,13 @@ const AUDIT_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// 业务流程：
 /// 1. 读取文件字节（一次 IO）+ 计算 sha256
 /// 2. 用同一份字节加载文档段落（无二次读取，消除 TOCTOU）
-/// 3. 执行 PRIORITY 1 规则（A.1, E.5.7, E.5.8）
-/// 4. 聚合 Violation → CheckRow → AuditResult
+/// 3. 解析黑词列表：优先查找 docx 同级的 `.thesis/blackwords.txt`，不存在则用内置列表
+/// 4. 执行 PRIORITY 1 规则（A.1, E.5.7, E.5.8）
+/// 5. 聚合 Violation → CheckRow → AuditResult
+///
+/// # 黑词目录解析规则
+/// - 取 `docx_path` 的父目录，查找 `parent/.thesis/blackwords.txt`
+/// - 若文件存在且可读 → 用文件中的词列表；否则 → 内置 `BLACKWORDS`
 ///
 /// # 语义约定
 /// - `passed = true` 当且仅当没有 Critical 级别的命中行
@@ -79,12 +84,23 @@ pub fn audit_full(docx_path: &Path) -> Result<AuditResult, AuditError> {
     debug!("提取段落数：{}", doc.paragraphs.len());
 
     // ============================================
-    // 第三步：执行规则检查，收集 Violation
+    // 第三步：解析黑词列表
+    // 查找 docx 同级的 .thesis/ 目录，存在则尝试读取 blackwords.txt；
+    // 不存在或读取失败则使用内置列表
+    // ============================================
+    let thesis_dir = docx_path
+        .parent()
+        .map(|parent| parent.join(".thesis"))
+        .filter(|p| p.is_dir());
+    let blackwords = a_anti_ai::load_blackwords(thesis_dir.as_deref());
+
+    // ============================================
+    // 第四步：执行规则检查，收集 Violation
     // ============================================
     let mut all_violations: Vec<Violation> = Vec::new();
 
-    // A.1：黑词检测
-    all_violations.extend(a_anti_ai::check_a1_blackwords(&doc.paragraphs));
+    // A.1：黑词检测（使用运行时解析的黑词列表）
+    all_violations.extend(a_anti_ai::check_a1_blackwords(&doc.paragraphs, &blackwords));
 
     // E.5.7：章节号自动编号检测
     all_violations.extend(e_format::check_e57_chapter_numbering(&doc.paragraphs));
@@ -93,12 +109,12 @@ pub fn audit_full(docx_path: &Path) -> Result<AuditResult, AuditError> {
     all_violations.extend(e_format::check_e58_reference_numbering(&doc.paragraphs));
 
     // ============================================
-    // 第四步：按 rule_id 聚合 Violation → CheckRow
+    // 第五步：按 rule_id 聚合 Violation → CheckRow
     // ============================================
     let check_rows = aggregate_violations(all_violations);
 
     // ============================================
-    // 第五步：构造 AuditResult
+    // 第六步：构造 AuditResult
     // violations_count 仅统计 Critical 命中行数；
     // passed = violations_count == 0（语义一致，无"passed=true 但 count>0"的矛盾状态）
     // ============================================
@@ -307,5 +323,102 @@ mod tests {
         let h2 = compute_sha256(data);
         assert_eq!(h1, h2, "sha256 应是确定性的");
         assert_eq!(h1.len(), 64);
+    }
+
+    // ========================
+    // extract_num_pr 端到端集成测试
+    // 通过 build_minimal_docx 构建真实 OOXML，验证 extract_num_pr 在 XML 解析链路上的正确性
+    // ========================
+
+    /// 含 numPr 的标题段落不应触发 E.5.7
+    ///
+    /// 场景：段落带有 `<w:pPr><w:numPr>...</w:numPr></w:pPr>`，即 Word 自动编号已设置。
+    /// 期望：`has_num_pr = true`，`check_e57_chapter_numbering` 不产生违规。
+    #[test]
+    fn test_numpr_integration_with_num_pr_no_e57_violation() {
+        // 段落带 numPr：ilvl=0, numId=1，文本看起来像章节号前缀（"1. 引言"）
+        // 因为 has_num_pr=true，不应触发 E.5.7
+        let body_xml = r#"<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:pPr>
+    <w:numPr>
+      <w:ilvl w:val="0"/>
+      <w:numId w:val="1"/>
+    </w:numPr>
+  </w:pPr>
+  <w:r><w:t>第一章 引言</w:t></w:r>
+</w:p>"#;
+
+        let docx_bytes = build_minimal_docx(body_xml);
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), &docx_bytes).unwrap();
+
+        let result = audit_full(tmp.path()).expect("audit_full 应成功");
+
+        // 不应有 E.5.7 违规（numPr 存在，自动编号已设置）
+        let e57_rows: Vec<_> = result
+            .self_check_table
+            .iter()
+            .filter(|r| r.rule_id == thesis_types::RuleId::E57)
+            .collect();
+        assert!(
+            e57_rows.is_empty(),
+            "含 numPr 的段落不应触发 E.5.7，实际：{e57_rows:?}"
+        );
+
+        // 验证 XML 解析路径确实读取了 numPr
+        let doc = crate::document::Document::load(tmp.path()).unwrap();
+        assert_eq!(doc.paragraphs.len(), 1);
+        assert!(
+            doc.paragraphs[0].has_num_pr,
+            "XML 中含 numPr 的段落，has_num_pr 应为 true"
+        );
+        assert_eq!(doc.paragraphs[0].num_id, Some(1));
+        assert_eq!(doc.paragraphs[0].ilvl, Some(0));
+    }
+
+    /// 无 numPr 的标题段落应触发 E.5.7
+    ///
+    /// 场景：同样内容"第一章 引言"开头的段落，但 `<w:pPr>` 中没有 `<w:numPr>`。
+    /// 期望：`has_num_pr = false`，且文本以数字开头的前缀检测规则命中 E.5.7。
+    ///
+    /// 注意：E.5.7 的手动章节号检测匹配"数字. "或"数字.数字 "前缀。
+    /// "第一章 引言"不以数字开头，所以此测试用"1. 引言"触发手动前缀检测。
+    #[test]
+    fn test_numpr_integration_without_num_pr_triggers_e57() {
+        // 段落无 numPr，文本以手动章节号前缀开头 → 应触发 E.5.7
+        let body_xml = r#"<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:pPr>
+    <w:pStyle w:val="Heading1"/>
+  </w:pPr>
+  <w:r><w:t>1. 引言</w:t></w:r>
+</w:p>"#;
+
+        let docx_bytes = build_minimal_docx(body_xml);
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), &docx_bytes).unwrap();
+
+        let result = audit_full(tmp.path()).expect("audit_full 应成功");
+
+        // 应有 E.5.7 违规（Heading1 样式但无 numPr）
+        let e57_rows: Vec<_> = result
+            .self_check_table
+            .iter()
+            .filter(|r| r.rule_id == thesis_types::RuleId::E57)
+            .collect();
+        assert!(
+            !e57_rows.is_empty(),
+            "无 numPr 的 Heading1 段落应触发 E.5.7"
+        );
+        assert!(!e57_rows[0].passed, "E.5.7 违规行 passed 应为 false");
+
+        // 验证 XML 解析路径确实没有读取到 numPr
+        let doc = crate::document::Document::load(tmp.path()).unwrap();
+        assert_eq!(doc.paragraphs.len(), 1);
+        assert!(
+            !doc.paragraphs[0].has_num_pr,
+            "XML 中无 numPr 的段落，has_num_pr 应为 false"
+        );
+        assert_eq!(doc.paragraphs[0].num_id, None);
+        assert_eq!(doc.paragraphs[0].ilvl, None);
     }
 }

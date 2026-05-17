@@ -1,0 +1,36 @@
+# thesis-hook: CC PreToolUse / PostToolUse / Stop hook 二进制
+# 作者: Atlas.oi  日期: 2026-05-17
+[package]
+name = "thesis-hook"
+version = "0.1.0"
+description = "Claude Code hook binary: PreToolUse intercept, PostToolUse bootstrap audit, Stop TOCTOU scan"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "thesis-hook"
+path = "src/main.rs"
+
+[dependencies]
+thesis-types    = { workspace = true }
+thesis-manifest = { path = "../thesis-manifest" }
+thesis-audit    = { path = "../thesis-audit" }
+serde           = { workspace = true }
+serde_json      = { workspace = true }
+chrono          = { workspace = true }
+anyhow          = { workspace = true }
+thiserror       = { workspace = true }
+clap            = { workspace = true }
+regex           = { workspace = true }
+shell-words     = { workspace = true }
+
+[dev-dependencies]
+tempfile    = { workspace = true }
+assert_cmd  = "2"
+zip         = { workspace = true }
+
+[lints]
+workspace = true

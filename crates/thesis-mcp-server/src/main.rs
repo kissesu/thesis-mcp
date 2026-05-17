@@ -1,5 +1,5 @@
 //! @file main.rs
-//! @description thesis-mcp-server 主入口：rmcp stdio MCP 服务，暴露 init / audit 工具
+//! @description thesis-mcp-server 主入口：rmcp stdio MCP 服务，暴露 init / audit / write_section / revise 工具
 //! @author Atlas.oi
 //! @date 2026-05-17
 
@@ -13,7 +13,10 @@ use rmcp::{
 mod health;
 mod tools;
 
-use tools::{AuditParams, InitParams, StubAuditEngine, run_audit, run_init};
+use tools::{
+    AuditParams, InitParams, RealAuditEngine, ReviseParams, WriteSectionParams, run_audit,
+    run_init, run_revise, run_write_section,
+};
 
 // ─── MCP 服务器结构体 ─────────────────────────────────────────────────────────
 
@@ -52,7 +55,8 @@ impl ThesisMcpServer {
     /// 审计指定 docx 文件，检查格式规范符合性，返回 AuditResult JSON。
     #[tool(description = "审计 docx 文件格式规范符合性，返回结构化 AuditResult")]
     async fn audit(&self, Parameters(params): Parameters<AuditParams>) -> CallToolResult {
-        let engine = StubAuditEngine;
+        // L3.1 起使用 RealAuditEngine（调用真实 thesis-audit 规则）
+        let engine = RealAuditEngine;
         match run_audit(&engine, &params) {
             Ok(json) => CallToolResult::success(vec![Content::text(json)]),
             Err(e) => {
@@ -62,8 +66,42 @@ impl ThesisMcpServer {
         }
     }
 
-    // TODO L3.1: write_section 工具（L3.1 实现后在此添加）
-    // TODO L3.1: revise 工具（L3.1 实现后在此添加）
+    /// 将新章节写入 thesis docx，通过全量审计后原子落盘。
+    #[tool(description = "Write a new section into a thesis docx with full audit gate")]
+    async fn write_section(
+        &self,
+        Parameters(params): Parameters<WriteSectionParams>,
+    ) -> CallToolResult {
+        match run_write_section(&params) {
+            Ok(output) => {
+                let json = serde_json::to_string_pretty(&output)
+                    .unwrap_or_else(|e| serde_json::json!({"error": e.to_string()}).to_string());
+                CallToolResult::success(vec![Content::text(json)])
+            }
+            Err(e) => {
+                tracing::error!("write_section 工具错误: {e}");
+                CallToolResult::error(vec![Content::text(format!("write_section 失败: {e}"))])
+            }
+        }
+    }
+
+    /// 以跟踪修订（蓝色 ins/del，无 strike 残留）形式修订 thesis docx。
+    #[tool(
+        description = "Apply revisions to a thesis docx using tracked changes (blue ins/del, no strike residual)"
+    )]
+    async fn revise(&self, Parameters(params): Parameters<ReviseParams>) -> CallToolResult {
+        match run_revise(&params) {
+            Ok(output) => {
+                let json = serde_json::to_string_pretty(&output)
+                    .unwrap_or_else(|e| serde_json::json!({"error": e.to_string()}).to_string());
+                CallToolResult::success(vec![Content::text(json)])
+            }
+            Err(e) => {
+                tracing::error!("revise 工具错误: {e}");
+                CallToolResult::error(vec![Content::text(format!("revise 失败: {e}"))])
+            }
+        }
+    }
 }
 
 // ─── 主函数 ───────────────────────────────────────────────────────────────────

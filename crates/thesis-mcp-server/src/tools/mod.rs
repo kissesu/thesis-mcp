@@ -5,7 +5,12 @@
 
 pub mod audit;
 pub mod init;
+pub mod revise;
+pub mod write_section;
 
 // Re-export 供 main.rs 直接引用
-pub use audit::{AuditParams, StubAuditEngine, run_audit};
+// StubAuditEngine 仅用于 audit.rs 内部测试，不对外 re-export
+pub use audit::{AuditParams, RealAuditEngine, run_audit};
 pub use init::{InitParams, run_init};
+pub use revise::{ReviseParams, run_revise};
+pub use write_section::{WriteSectionParams, run_write_section};

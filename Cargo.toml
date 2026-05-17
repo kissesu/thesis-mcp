@@ -19,6 +19,8 @@ repository = "https://github.com/Atlas-oi/thesis-mcp"
 [workspace.dependencies]
 # 内部 crate：通过 path 引用，子 crate 用 thesis-types.workspace = true 引入
 thesis-types = { path = "crates/thesis-types" }
+thesis-audit = { path = "crates/thesis-audit" }
+thesis-manifest = { path = "crates/thesis-manifest" }
 
 # MCP 协议主框架
 rmcp = "1.7"
@@ -57,6 +59,12 @@ anyhow = "1"
 
 # CLI（thesis-hook / thesis-mcp-server 子命令）
 clap = { version = "4", features = ["derive"] }
+
+# 正则表达式
+regex = "1"
+
+# shell 命令解析（argv 级别标记化，处理引号与转义）
+shell-words = "1"
 
 # 日志
 tracing = "0.1"
