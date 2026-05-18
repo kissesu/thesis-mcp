@@ -31,6 +31,9 @@ pub mod styles;
 pub mod textbox;
 pub mod tracked_changes;
 
+// 公共 XML 工具（comments / footnotes 共享实现）
+pub mod xml_utils;
+
 pub use error::AuditError;
 
 use std::collections::HashMap;
@@ -44,7 +47,7 @@ use thesis_types::{AuditResult, CheckRow, RuleId, Severity};
 use tracing::debug;
 
 use crate::document::Document;
-use crate::rules::{Violation, a_anti_ai, e_format};
+use crate::rules::{Violation, a_anti_ai, c_citation, e_format};
 
 /// 审计引擎版本，与 Cargo.toml 保持一致。
 const AUDIT_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -57,12 +60,13 @@ const AUDIT_VERSION: &str = env!("CARGO_PKG_VERSION");
 ///
 /// 业务流程：
 /// 1. 读取文件字节（一次 IO）+ 计算 sha256
-/// 2. 用同一份字节加载文档段落（无二次读取，消除 TOCTOU）
+/// 2. 用同一份字节加载文档主体段落（无二次读取，消除 TOCTOU）
 /// 3. 解析黑词列表：优先查找 docx 同级的 `.thesis/blackwords.txt`，不存在则用内置列表
-/// 4. 执行 P1 规则（A.1, E.5.7, E.5.8）+ P1 页眉/页脚/文本框扫描 + F.5.x 修订检测
-/// 5. 执行 P2 规则（D.9.x 表格缩进）
-/// 6. 执行 P3 规则（批注 / 脚注 A.1 扫描）
-/// 7. 聚合 Violation → CheckRow → AuditResult
+/// 4. 构建编号映射（numbering.rs）+ 加载样式表（styles.rs）
+/// 5. 执行 P1 规则（A.1, E.5.7, E.5.8）+ P1 页眉/页脚/文本框扫描 + F.5.x 修订检测
+/// 6. 执行 P2 规则（D.9.x 表格缩进）
+/// 7. 执行 P3 规则（批注 / 脚注 A.1 扫描，C.1/C.2 引用检查）
+/// 8. 聚合 Violation → CheckRow → AuditResult
 ///
 /// # 黑词目录解析规则
 /// - 取 `docx_path` 的父目录，查找 `parent/.thesis/blackwords.txt`
@@ -96,6 +100,24 @@ pub fn audit_full(docx_path: &Path) -> Result<AuditResult, AuditError> {
     let blackwords = a_anti_ai::load_blackwords(thesis_dir.as_deref());
 
     // ============================================
+    // 第三步（补充）：构建编号映射（E.5.7 / E.5.8 增强校验所需）
+    // 文档无编号时返回空 Vec，不影响主流程
+    // ============================================
+    let numbering_map = numbering::build_numbering_map(&docx_bytes).unwrap_or_default();
+    let numbering_map_opt = if numbering_map.is_empty() {
+        None
+    } else {
+        Some(numbering_map.as_slice())
+    };
+
+    // ============================================
+    // 第三步（补充）：提取样式表
+    // 当前 L4 阶段只加载，F 系规则（L5）才消费
+    // ============================================
+    #[allow(unused_variables)] // TODO(L5): wire F series style chain validation
+    let style_map = styles::extract_styles(&docx_bytes).unwrap_or_default();
+
+    // ============================================
     // 第四步：执行规则检查，收集 Violation
     // ============================================
     let mut all_violations: Vec<Violation> = Vec::new();
@@ -104,11 +126,17 @@ pub fn audit_full(docx_path: &Path) -> Result<AuditResult, AuditError> {
     // A.1：主体段落黑词检测
     all_violations.extend(a_anti_ai::check_a1_blackwords(&doc.paragraphs, &blackwords));
 
-    // E.5.7：章节号自动编号检测
-    all_violations.extend(e_format::check_e57_chapter_numbering(&doc.paragraphs));
+    // E.5.7：章节号自动编号检测（附带编号映射做 lvlText 格式验证）
+    all_violations.extend(e_format::check_e57_chapter_numbering(
+        &doc.paragraphs,
+        numbering_map_opt,
+    ));
 
-    // E.5.8：参考文献自动编号检测（部分实现）
-    all_violations.extend(e_format::check_e58_reference_numbering(&doc.paragraphs));
+    // E.5.8：参考文献自动编号检测（附带编号映射做 lvlText 格式验证）
+    all_violations.extend(e_format::check_e58_reference_numbering(
+        &doc.paragraphs,
+        numbering_map_opt,
+    ));
 
     // ── P1: 页眉/页脚 A.1 扫描（HC-6）──
     all_violations.extend(headers_footers::check_headers_footers_blackwords(
@@ -139,6 +167,12 @@ pub fn audit_full(docx_path: &Path) -> Result<AuditResult, AuditError> {
         &docx_bytes,
         &blackwords,
     ));
+
+    // ── P3: C.1 引用上标检查──
+    all_violations.extend(c_citation::check_c1_citation_superscript(&doc.paragraphs));
+
+    // ── P3: C.2 引用编号顺序检查──
+    all_violations.extend(c_citation::check_c2_citation_order(&doc.paragraphs));
 
     // ============================================
     // 第五步：按 rule_id 聚合 Violation → CheckRow
@@ -424,5 +458,86 @@ mod tests {
 
         let doc = crate::document::Document::load(tmp.path()).unwrap();
         assert!(!doc.paragraphs[0].has_num_pr);
+    }
+
+    /// 验证 C.2 引用顺序检查通过 audit_full 正确触发。
+    ///
+    /// fixture：段落文本含乱序引用 [2] 先出现 [1] 后出现 → C.2 违规。
+    #[test]
+    fn test_audit_full_includes_c2_citation_order_check() {
+        // build_minimal_docx 接受 body 内容（不含 <w:body> 标签），拼两段
+        let body_xml = r#"<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:r><w:t>本研究参考了[2]的方法。</w:t></w:r>
+</w:p>
+<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:r><w:t>也参考了[1]的框架。</w:t></w:r>
+</w:p>"#;
+
+        let docx_bytes = build_minimal_docx(body_xml);
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), &docx_bytes).unwrap();
+
+        let result = audit_full(tmp.path()).expect("audit_full 应成功");
+
+        let c2_rows: Vec<_> = result
+            .self_check_table
+            .iter()
+            .filter(|r| r.rule_id == RuleId::C2)
+            .collect();
+        assert!(
+            !c2_rows.is_empty(),
+            "乱序引用应通过 audit_full 触发 C.2 违规，实际表：{:?}",
+            result.self_check_table
+        );
+        assert!(!c2_rows[0].passed);
+    }
+
+    /// 验证 C.1 检查通过 audit_full 调用（当前实现返回空 Vec，验证 wire-up 不崩溃）。
+    #[test]
+    fn test_audit_full_includes_c1_citation_check_no_panic() {
+        let tmp = make_docx_with_text("参考文献[1]已引用。");
+        // C.1 当前轻实现：返回空 Vec，不误报
+        let result = audit_full(tmp.path()).expect("audit_full 不应崩溃");
+        let c1_rows: Vec<_> = result
+            .self_check_table
+            .iter()
+            .filter(|r| r.rule_id == RuleId::C1)
+            .collect();
+        // 轻实现保守策略：不产生违规，避免误报
+        assert!(c1_rows.is_empty(), "C.1 轻实现不应产生误报");
+    }
+
+    /// 验证 numbering wire-up 不崩溃，且 E.5.7 在有 numPr 段落时不误报。
+    #[test]
+    fn test_audit_full_includes_numbering_violations_no_crash() {
+        // 含 numPr 的段落：合规场景，不应产生 E.5.7 违规
+        let body_xml = r#"<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:pPr>
+    <w:pStyle w:val="Heading1"/>
+    <w:numPr>
+      <w:ilvl w:val="0"/>
+      <w:numId w:val="1"/>
+    </w:numPr>
+  </w:pPr>
+  <w:r><w:t>引言</w:t></w:r>
+</w:p>"#;
+
+        let docx_bytes = build_minimal_docx(body_xml);
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), &docx_bytes).unwrap();
+
+        // 无 numbering.xml → build_numbering_map 返回空 Vec → numbering_map_opt = None
+        // 应正常运行，不崩溃
+        let result = audit_full(tmp.path()).expect("audit_full 不应崩溃（numbering wire-up）");
+
+        let e57_rows: Vec<_> = result
+            .self_check_table
+            .iter()
+            .filter(|r| r.rule_id == RuleId::E57)
+            .collect();
+        assert!(
+            e57_rows.is_empty(),
+            "有 numPr 的段落在无 numbering.xml 时不应触发 E.5.7：{e57_rows:?}"
+        );
     }
 }
