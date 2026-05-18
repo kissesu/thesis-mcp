@@ -13,7 +13,7 @@ edition = "2024"
 rust-version = "1.88"
 authors = ["Atlas.oi"]
 license = "MIT"
-repository = "https://github.com/Atlas-oi/thesis-mcp"
+repository = "https://github.com/kissesu/thesis-mcp"
 
 # 全工程统一管理的依赖版本
 [workspace.dependencies]

@@ -32,7 +32,7 @@ thesis-mcp/
 ### 安装（推荐：Claude Code plugin）
 
 ```bash
-claude plugin install Atlas-oi/thesis-mcp
+claude plugin install kissesu/thesis-mcp
 ```
 
 一行装完，自动完成：
@@ -64,7 +64,7 @@ claude plugin uninstall thesis-mcp
 - 网络受限拉不到 release tarball
 
 ```bash
-git clone https://github.com/Atlas-oi/thesis-mcp.git
+git clone https://github.com/kissesu/thesis-mcp.git
 cd thesis-mcp
 bash scripts/install.sh   # 编译 → 软链 → 改 settings.json
 ```

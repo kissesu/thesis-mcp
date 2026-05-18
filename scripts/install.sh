@@ -2,7 +2,7 @@
 # scripts/install.sh — thesis-mcp 开发者本地安装脚本（dev fallback）
 #
 # 注意：自 v0.1.0 起本项目主路径是 Claude Code plugin：
-#       claude plugin install Atlas-oi/thesis-mcp
+#       claude plugin install kissesu/thesis-mcp
 # 本脚本仅保留作开发者本地构建（改 Rust 源码后想本地测试 / 仓库未发布 release 时）。
 #
 # 用法:
@@ -27,7 +27,7 @@ if [ "${THESIS_MCP_SUPPRESS_DEPRECATION:-0}" != "1" ]; then
 │ [thesis-mcp] 提示：你正在使用开发者本地构建路径              │
 │                                                              │
 │ 普通用户应改用 Claude Code plugin（一行装完，自动拉预编译二进制）：│
-│   claude plugin install Atlas-oi/thesis-mcp                  │
+│   claude plugin install kissesu/thesis-mcp                  │
 │                                                              │
 │ 仅在改 Rust 源码 / 仓库未发布 release / 网络受限时用本脚本。 │
 │ 抑制此提示：export THESIS_MCP_SUPPRESS_DEPRECATION=1         │

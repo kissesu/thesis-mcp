@@ -41,7 +41,7 @@ if [ -z "$VERSION" ]; then
     exit 1
 fi
 
-REPO="Atlas-oi/thesis-mcp"
+REPO="kissesu/thesis-mcp"
 
 # Windows 用 .zip，其他平台 .tar.gz
 if [[ "$TARGET" == *windows* ]]; then
