@@ -1,18 +1,40 @@
 #!/usr/bin/env bash
-# scripts/install.sh — thesis-mcp 一键安装脚本
-# 将编译产物软链到 ~/.claude/hooks/，并写入 ~/.claude.json (mcpServers)
-# 和 ~/.claude/settings.json (hooks: PreToolUse / Stop / PostToolUse)
+# scripts/install.sh — thesis-mcp 开发者本地安装脚本（dev fallback）
+#
+# 注意：自 v0.1.0 起本项目主路径是 Claude Code plugin：
+#       claude plugin install Atlas-oi/thesis-mcp
+# 本脚本仅保留作开发者本地构建（改 Rust 源码后想本地测试 / 仓库未发布 release 时）。
 #
 # 用法:
-#   bash scripts/install.sh             # 正常安装
+#   bash scripts/install.sh             # 正常安装（本地构建）
 #   bash scripts/install.sh --dry-run   # 打印计划，不执行
 #   bash scripts/install.sh --uninstall # 卸载
 #   bash scripts/install.sh --uninstall --restore-backup  # 卸载并还原最近备份
+#
+# 抑制 deprecation warning：export THESIS_MCP_SUPPRESS_DEPRECATION=1
 #
 # @author Atlas.oi
 # @date   2026-05-18
 
 set -euo pipefail
+
+# ============================================================
+# Deprecation warning（dev fallback 提示）
+# ============================================================
+if [ "${THESIS_MCP_SUPPRESS_DEPRECATION:-0}" != "1" ]; then
+    cat >&2 <<'EOF'
+┌─────────────────────────────────────────────────────────────┐
+│ [thesis-mcp] 提示：你正在使用开发者本地构建路径              │
+│                                                              │
+│ 普通用户应改用 Claude Code plugin（一行装完，自动拉预编译二进制）：│
+│   claude plugin install Atlas-oi/thesis-mcp                  │
+│                                                              │
+│ 仅在改 Rust 源码 / 仓库未发布 release / 网络受限时用本脚本。 │
+│ 抑制此提示：export THESIS_MCP_SUPPRESS_DEPRECATION=1         │
+└─────────────────────────────────────────────────────────────┘
+EOF
+    sleep 2
+fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 常量

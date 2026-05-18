@@ -1,0 +1,9 @@
+{
+  "thesis": {
+    "command": "bash",
+    "args": [
+      "${CLAUDE_PLUGIN_ROOT}/scripts/launcher.sh",
+      "thesis-mcp-server"
+    ]
+  }
+}

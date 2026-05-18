@@ -1,0 +1,101 @@
+name: release
+
+# tag push 触发：5 平台 matrix build，每个 target 打包 thesis-hook + thesis-mcp-server
+# 上传到 GitHub release 供 plugin fetch-binaries.sh 拉取。
+#
+# tag 格式：v0.1.0 / v0.2.0 etc.（语义版本）
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build-${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-14
+            cross: false
+          - target: x86_64-apple-darwin
+            runner: macos-13
+            cross: false
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04
+            cross: false
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-22.04
+            cross: true
+          - target: x86_64-pc-windows-msvc
+            runner: windows-2022
+            cross: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install cross (linux arm64)
+        if: matrix.cross
+        run: cargo install cross --locked --git https://github.com/cross-rs/cross
+
+      - name: Build native
+        if: ${{ !matrix.cross }}
+        run: cargo build --release --workspace --target ${{ matrix.target }}
+
+      - name: Build via cross
+        if: matrix.cross
+        run: cross build --release --workspace --target ${{ matrix.target }}
+
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          ARCHIVE="thesis-mcp-${VERSION}-${{ matrix.target }}.tar.gz"
+          mkdir -p package
+          cp target/${{ matrix.target }}/release/thesis-hook package/
+          cp target/${{ matrix.target }}/release/thesis-mcp-server package/
+          tar -czf "$ARCHIVE" -C package .
+          if command -v sha256sum >/dev/null; then
+            sha256sum "$ARCHIVE" | awk '{print $1}' > "$ARCHIVE.sha256"
+          else
+            shasum -a 256 "$ARCHIVE" | awk '{print $1}' > "$ARCHIVE.sha256"
+          fi
+          echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          ARCHIVE="thesis-mcp-${VERSION}-${{ matrix.target }}.zip"
+          mkdir -p package
+          cp target/${{ matrix.target }}/release/thesis-hook.exe package/
+          cp target/${{ matrix.target }}/release/thesis-mcp-server.exe package/
+          7z a "$ARCHIVE" ./package/* >/dev/null
+          certutil -hashfile "$ARCHIVE" SHA256 | sed -n '2p' | tr -d ' \r' > "$ARCHIVE.sha256"
+          echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ env.ARCHIVE }}
+            ${{ env.ARCHIVE }}.sha256
+          fail_on_unmatched_files: true

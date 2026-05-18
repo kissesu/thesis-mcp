@@ -29,82 +29,55 @@ thesis-mcp/
 
 ## 快速开始
 
-### 依赖
-
-- Rust 1.95+（`rustup update stable`）
-- jq（`brew install jq`）
-- Claude Code（已安装并配置）
-
-### 安装
+### 安装（推荐：Claude Code plugin）
 
 ```bash
-cd /Users/oi/CodeCoding/Code/自研项目/Skills/thesis-mcp
-bash scripts/install.sh
+claude plugin install Atlas-oi/thesis-mcp
 ```
 
-安装脚本会：
-1. `cargo build --release --workspace` 编译两个二进制
-2. 将 `thesis-mcp-server` 和 `thesis-hook` 软链到 `~/.claude/hooks/`
-3. 在 `~/.claude.json` 的 `mcpServers` 中注册 `"thesis"` 条目
-4. 在 `~/.claude/settings.json` 的 `hooks` 中注册 PreToolUse / Stop / PostToolUse 三条规则
-
-安装完成后**重启 Claude Code**使配置生效。
+一行装完，自动完成：
+1. 拉取 skill (`skills/thesis/`) 注入 system prompt
+2. 注册 PreToolUse / Stop / PostToolUse hooks
+3. 注册 MCP server (`thesis`)
+4. **首次使用时**自动从 GitHub release 拉取当前平台的预编译二进制（macOS arm64/x64、Linux x64/arm64、Windows x64），无需本地 Rust 工具链
 
 ### 验证
 
-重启后在 Claude Code 中：
-- 输入 `/thesis` 触发 skill，观察是否调用 `mcp__thesis__init`
-- 尝试 `Write test.docx` 应看到 hook 阻断提示，要求改用 `mcp__thesis__write_section`
-
----
-
-## 手动配置
-
-如果不使用 `install.sh`，手动将以下内容加入 `~/.claude.json`：
-
-```json
-{
-  "mcpServers": {
-    "thesis": {
-      "type": "stdio",
-      "command": "/Users/oi/.claude/hooks/thesis-mcp-server",
-      "args": []
-    }
-  }
-}
+```bash
+# 重启 Claude Code 后，输入 /thesis 触发 skill
+# 或尝试 Write test.docx，应被 PreToolUse hook 阻断
 ```
 
-并在 `~/.claude/settings.json` 的 `hooks` 字段中追加：
+### 卸载
 
-```json
-{
-  "PreToolUse": [{
-    "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash|Agent",
-    "hooks": [{ "type": "command", "command": "~/.claude/hooks/thesis-hook pre-tool-use", "timeout": 10 }]
-  }],
-  "Stop": [{
-    "matcher": "",
-    "hooks": [{ "type": "command", "command": "~/.claude/hooks/thesis-hook stop", "timeout": 10 }]
-  }],
-  "PostToolUse": [{
-    "matcher": "Write|Edit|MultiEdit|NotebookEdit",
-    "hooks": [{ "type": "command", "command": "~/.claude/hooks/thesis-hook post-tool-use", "timeout": 10 }]
-  }]
-}
+```bash
+claude plugin uninstall thesis-mcp
 ```
 
 ---
 
-## 卸载
+## 开发者本地构建（dev fallback）
+
+只在以下场景需要：
+- 改 Rust 源码后想本地测试（不走 GitHub release）
+- 仓库尚未发布 release 时调试
+- 网络受限拉不到 release tarball
+
+```bash
+git clone https://github.com/Atlas-oi/thesis-mcp.git
+cd thesis-mcp
+bash scripts/install.sh   # 编译 → 软链 → 改 settings.json
+```
+
+> **注意**：`scripts/install.sh` 是 plugin 系统之前的旧路径，仅保留作开发者本地构建用。普通用户应走 `claude plugin install`。
+
+依赖：Rust 1.95+ / jq / Claude Code。
+
+### 卸载本地构建
 
 ```bash
 bash scripts/install.sh --uninstall
-```
-
-如需同时还原安装前的配置备份：
-
-```bash
-bash scripts/install.sh --uninstall --restore-backup
+bash scripts/install.sh --uninstall --restore-backup   # 同时还原 settings.json 备份
 ```
 
 ---
@@ -165,11 +138,11 @@ HOME=$(mktemp -d) bash scripts/install.sh --dry-run
 | HC-29 | mtime 无差别扫 | 已实现（Stop hook） |
 | HC-30 | manifest 锁定本轮目标 | 已实现（thesis-manifest crate） |
 | HC-31 | 完整 OOXML 包审计 | 已实现（thesis-audit 全 part 扫描） |
-| HC-32 | 自检表 hook 注入 | 已实现（PostToolUse additionalContext） |
+| HC-32 | 自检表 hook 注入 | **延后** — 需 PostToolUse + MCP server 跨进程协同（additionalContext 注入）|
 
-**延后清单**：无（L4 全部完成）
+**延后清单**：HC-32（self-check 表注入需 hook 与 MCP server 跨进程协同，本项目当前架构未实现该回路）
 
-**不适用**：HC-1/HC-2/HC-17（HC-1/HC-2 已由 thesis-hook 替代旧 thesis-stop-guard.js；HC-17 为架构层问题）
+**不适用**：HC-1/HC-2/HC-17（HC-1/HC-2 已由 thesis-hook 替代旧 thesis-stop-guard.js；HC-17 为 CC 架构层问题，非 Rust 层职责）
 
 ---
 

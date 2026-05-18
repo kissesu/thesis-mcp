@@ -1,0 +1,40 @@
+name: ci
+
+# PR / push 触发：fmt + clippy + build + test 全栈质量门
+# 单 runner (Linux x64) 即可，多平台 build 留给 release tag 触发的 release.yml
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  quality-gate:
+    name: fmt + clippy + test
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (workspace, all targets, -D warnings)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Build (workspace, all targets)
+        run: cargo build --workspace --all-targets
+
+      - name: Test (workspace, no-fail-fast)
+        run: cargo test --workspace --no-fail-fast

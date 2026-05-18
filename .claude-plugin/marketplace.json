@@ -1,0 +1,18 @@
+{
+  "name": "thesis-mcp",
+  "owner": {
+    "name": "Atlas-oi",
+    "url": "https://github.com/Atlas-oi"
+  },
+  "plugins": [
+    {
+      "name": "thesis-mcp",
+      "source": "./.claude-plugin",
+      "description": "中文学术论文写作强制执行层（MCP + Hook + Skill 一体化）",
+      "version": "0.1.0",
+      "author": {
+        "name": "Atlas.oi"
+      }
+    }
+  ]
+}

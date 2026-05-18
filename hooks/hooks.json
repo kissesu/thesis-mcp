@@ -1,0 +1,35 @@
+{
+  "description": "thesis-mcp PreToolUse / Stop / PostToolUse hook 注册。所有 hook 通过 scripts/launcher.sh 调用平台对应二进制（首次执行触发 fetch-binaries.sh 拉取）。",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/scripts/launcher.sh thesis-hook pre-tool-use"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/scripts/launcher.sh thesis-hook stop"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/scripts/launcher.sh thesis-hook post-tool-use"
+          }
+        ]
+      }
+    ]
+  }
+}
