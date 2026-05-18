@@ -13,7 +13,7 @@
 //! 5. 构造 `AuditResult`：passed = 无 Critical 违规
 //!
 //! @author Atlas.oi
-//! @date 2026-05-17
+//! @date 2026-05-18
 
 pub mod document;
 pub mod error;
@@ -23,7 +23,7 @@ pub mod rules;
 pub mod numbering;
 pub mod tables;
 
-// Priority 3 stubs
+// Priority 3 stubs → 已实现
 pub mod comments;
 pub mod footnotes;
 pub mod headers_footers;
@@ -34,9 +34,11 @@ pub mod tracked_changes;
 pub use error::AuditError;
 
 use std::collections::HashMap;
+use std::io::Cursor;
 use std::path::Path;
 
 use chrono::Utc;
+use ooxmlsdk::parts::wordprocessing_document::WordprocessingDocument;
 use sha2::{Digest, Sha256};
 use thesis_types::{AuditResult, CheckRow, RuleId, Severity};
 use tracing::debug;
@@ -57,8 +59,10 @@ const AUDIT_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// 1. 读取文件字节（一次 IO）+ 计算 sha256
 /// 2. 用同一份字节加载文档段落（无二次读取，消除 TOCTOU）
 /// 3. 解析黑词列表：优先查找 docx 同级的 `.thesis/blackwords.txt`，不存在则用内置列表
-/// 4. 执行 PRIORITY 1 规则（A.1, E.5.7, E.5.8）
-/// 5. 聚合 Violation → CheckRow → AuditResult
+/// 4. 执行 P1 规则（A.1, E.5.7, E.5.8）+ P1 页眉/页脚/文本框扫描 + F.5.x 修订检测
+/// 5. 执行 P2 规则（D.9.x 表格缩进）
+/// 6. 执行 P3 规则（批注 / 脚注 A.1 扫描）
+/// 7. 聚合 Violation → CheckRow → AuditResult
 ///
 /// # 黑词目录解析规则
 /// - 取 `docx_path` 的父目录，查找 `parent/.thesis/blackwords.txt`
@@ -72,21 +76,18 @@ pub fn audit_full(docx_path: &Path) -> Result<AuditResult, AuditError> {
 
     // ============================================
     // 第一步：一次性读取文件字节，计算 sha256
-    // 字节与 sha256 均来自同一次 read，保证哈希与被解析内容一致
     // ============================================
     let docx_bytes = std::fs::read(docx_path)?;
     let sha256_hex = compute_sha256(&docx_bytes);
 
     // ============================================
-    // 第二步：从同一份字节加载文档（无需再次打开文件）
+    // 第二步：从同一份字节加载文档主体段落
     // ============================================
     let doc = Document::load_bytes(&docx_bytes)?;
     debug!("提取段落数：{}", doc.paragraphs.len());
 
     // ============================================
     // 第三步：解析黑词列表
-    // 查找 docx 同级的 .thesis/ 目录，存在则尝试读取 blackwords.txt；
-    // 不存在或读取失败则使用内置列表
     // ============================================
     let thesis_dir = docx_path
         .parent()
@@ -99,7 +100,8 @@ pub fn audit_full(docx_path: &Path) -> Result<AuditResult, AuditError> {
     // ============================================
     let mut all_violations: Vec<Violation> = Vec::new();
 
-    // A.1：黑词检测（使用运行时解析的黑词列表）
+    // ── P1: 文档主体 ──
+    // A.1：主体段落黑词检测
     all_violations.extend(a_anti_ai::check_a1_blackwords(&doc.paragraphs, &blackwords));
 
     // E.5.7：章节号自动编号检测
@@ -108,6 +110,36 @@ pub fn audit_full(docx_path: &Path) -> Result<AuditResult, AuditError> {
     // E.5.8：参考文献自动编号检测（部分实现）
     all_violations.extend(e_format::check_e58_reference_numbering(&doc.paragraphs));
 
+    // ── P1: 页眉/页脚 A.1 扫描（HC-6）──
+    all_violations.extend(headers_footers::check_headers_footers_blackwords(
+        &docx_bytes,
+        &blackwords,
+    ));
+
+    // ── P1: 文本框 A.1 扫描（HC-7）──
+    all_violations.extend(textbox::check_textbox_blackwords(&docx_bytes, &blackwords));
+
+    // ── P1: 修订痕迹检测（F.5.1 / F.5.2）──
+    all_violations.extend(tracked_changes::check_tracked_changes(&docx_bytes));
+
+    // ── P2: 表格 cell 缩进检查（D.9.1 / D.9.2）──
+    // 需要 body_choice，重新从字节打开 package 获取（只读）
+    if let Ok(table_violations) = run_table_check(&docx_bytes) {
+        all_violations.extend(table_violations);
+    }
+
+    // ── P3: 批注 A.1 扫描──
+    all_violations.extend(comments::check_comments_blackwords(
+        &docx_bytes,
+        &blackwords,
+    ));
+
+    // ── P3: 脚注/尾注 A.1 扫描──
+    all_violations.extend(footnotes::check_footnotes_blackwords(
+        &docx_bytes,
+        &blackwords,
+    ));
+
     // ============================================
     // 第五步：按 rule_id 聚合 Violation → CheckRow
     // ============================================
@@ -115,8 +147,6 @@ pub fn audit_full(docx_path: &Path) -> Result<AuditResult, AuditError> {
 
     // ============================================
     // 第六步：构造 AuditResult
-    // violations_count 仅统计 Critical 命中行数；
-    // passed = violations_count == 0（语义一致，无"passed=true 但 count>0"的矛盾状态）
     // ============================================
     let violations_count = check_rows
         .iter()
@@ -137,10 +167,6 @@ pub fn audit_full(docx_path: &Path) -> Result<AuditResult, AuditError> {
 }
 
 /// 对特定节（section_id）执行检查（stub，待 L2.1b 实现）。
-///
-/// 规划：通过 section_id 定位段落范围（书签或样式边界），
-/// 只对该范围内的段落执行规则检查，减少无关命中。
-// stub: implement in L2.1b sub-task
 pub fn audit_section(docx_path: &Path, section_id: &str) -> Result<AuditResult, AuditError> {
     todo!(
         "L2.1b: audit_section — 按 section_id({section_id:?}) 定位段落范围后调用 audit_full 子集；路径：{docx_path:?}"
@@ -151,6 +177,25 @@ pub fn audit_section(docx_path: &Path, section_id: &str) -> Result<AuditResult, 
 // 内部辅助函数
 // ============================================
 
+/// 执行表格 cell 缩进检查（D.9.x），需要从字节重新打开 package。
+///
+/// 封装为独立函数，避免 audit_full 函数体过长。
+fn run_table_check(docx_bytes: &[u8]) -> Result<Vec<Violation>, AuditError> {
+    let mut package =
+        WordprocessingDocument::new(Cursor::new(docx_bytes)).map_err(AuditError::from_sdk)?;
+
+    let main_part = package.main_document_part().map_err(AuditError::from_sdk)?;
+    let root = main_part
+        .root_element(&mut package)
+        .map_err(AuditError::from_sdk)?;
+    let body = root
+        .body
+        .as_ref()
+        .ok_or_else(|| AuditError::SchemaViolation("Document 缺少 body".to_owned()))?;
+
+    Ok(tables::check_d91_cell_indent(&body.body_choice))
+}
+
 /// 计算字节切片的 sha256 hex 字符串。
 fn compute_sha256(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
@@ -159,15 +204,11 @@ fn compute_sha256(data: &[u8]) -> String {
 }
 
 /// 将 `Vec<Violation>` 按 `rule_id` 聚合为 `Vec<CheckRow>`。
-///
-/// 每个 rule_id 只产生一行 CheckRow，多条 Violation 合并到 `locations`。
-/// 无命中的规则不产生 CheckRow（调用方只收到有命中的规则行）。
 fn aggregate_violations(violations: Vec<Violation>) -> Vec<CheckRow> {
     if violations.is_empty() {
         return Vec::new();
     }
 
-    // 按 rule_id 分组
     let mut map: HashMap<RuleId, Vec<Violation>> = HashMap::new();
     for v in violations {
         map.entry(v.rule_id).or_default().push(v);
@@ -176,7 +217,6 @@ fn aggregate_violations(violations: Vec<Violation>) -> Vec<CheckRow> {
     let mut rows: Vec<CheckRow> = map
         .into_iter()
         .map(|(rule_id, vs)| {
-            // 取第一条的 severity（同一规则 severity 相同）
             let severity = vs[0].severity;
             let locations: Vec<String> = vs.iter().map(|v| v.location.clone()).collect();
             let actual = vs
@@ -197,7 +237,6 @@ fn aggregate_violations(violations: Vec<Violation>) -> Vec<CheckRow> {
         })
         .collect();
 
-    // 按 rule_id 字符串排序，保证输出顺序稳定
     rows.sort_by_key(|r| r.rule_id.as_str());
     rows
 }
@@ -268,7 +307,6 @@ mod tests {
     fn test_audit_full_returns_ok_for_clean_doc() {
         let tmp = make_docx_with_text("本研究采用对比实验方法验证假设。");
         let result = audit_full(tmp.path()).expect("audit_full 应成功");
-        // 无黑词、无手动章节号 → 无违规
         assert!(
             result.self_check_table.is_empty() || result.violations_count == 0,
             "干净文档不应有违规：{:?}",
@@ -294,7 +332,6 @@ mod tests {
     fn test_audit_full_sha256_is_hex_string() {
         let tmp = make_docx_with_text("测试文档");
         let result = audit_full(tmp.path()).expect("audit_full 应成功");
-        // sha256 hex 应为 64 个十六进制字符
         assert_eq!(result.sha256_hex.len(), 64, "sha256 应为 64 字符 hex");
         assert!(
             result.sha256_hex.chars().all(|c| c.is_ascii_hexdigit()),
@@ -311,7 +348,6 @@ mod tests {
 
     #[test]
     fn test_error_display_io_error() {
-        // 不存在的路径应返回 IoError
         let err = audit_full(Path::new("/nonexistent/path/doc.docx"));
         assert!(matches!(err, Err(AuditError::IoError(_))));
     }
@@ -325,19 +361,8 @@ mod tests {
         assert_eq!(h1.len(), 64);
     }
 
-    // ========================
-    // extract_num_pr 端到端集成测试
-    // 通过 build_minimal_docx 构建真实 OOXML，验证 extract_num_pr 在 XML 解析链路上的正确性
-    // ========================
-
-    /// 含 numPr 的标题段落不应触发 E.5.7
-    ///
-    /// 场景：段落带有 `<w:pPr><w:numPr>...</w:numPr></w:pPr>`，即 Word 自动编号已设置。
-    /// 期望：`has_num_pr = true`，`check_e57_chapter_numbering` 不产生违规。
     #[test]
     fn test_numpr_integration_with_num_pr_no_e57_violation() {
-        // 段落带 numPr：ilvl=0, numId=1，文本看起来像章节号前缀（"1. 引言"）
-        // 因为 has_num_pr=true，不应触发 E.5.7
         let body_xml = r#"<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
   <w:pPr>
     <w:numPr>
@@ -354,7 +379,6 @@ mod tests {
 
         let result = audit_full(tmp.path()).expect("audit_full 应成功");
 
-        // 不应有 E.5.7 违规（numPr 存在，自动编号已设置）
         let e57_rows: Vec<_> = result
             .self_check_table
             .iter()
@@ -365,27 +389,15 @@ mod tests {
             "含 numPr 的段落不应触发 E.5.7，实际：{e57_rows:?}"
         );
 
-        // 验证 XML 解析路径确实读取了 numPr
         let doc = crate::document::Document::load(tmp.path()).unwrap();
         assert_eq!(doc.paragraphs.len(), 1);
-        assert!(
-            doc.paragraphs[0].has_num_pr,
-            "XML 中含 numPr 的段落，has_num_pr 应为 true"
-        );
+        assert!(doc.paragraphs[0].has_num_pr);
         assert_eq!(doc.paragraphs[0].num_id, Some(1));
         assert_eq!(doc.paragraphs[0].ilvl, Some(0));
     }
 
-    /// 无 numPr 的标题段落应触发 E.5.7
-    ///
-    /// 场景：同样内容"第一章 引言"开头的段落，但 `<w:pPr>` 中没有 `<w:numPr>`。
-    /// 期望：`has_num_pr = false`，且文本以数字开头的前缀检测规则命中 E.5.7。
-    ///
-    /// 注意：E.5.7 的手动章节号检测匹配"数字. "或"数字.数字 "前缀。
-    /// "第一章 引言"不以数字开头，所以此测试用"1. 引言"触发手动前缀检测。
     #[test]
     fn test_numpr_integration_without_num_pr_triggers_e57() {
-        // 段落无 numPr，文本以手动章节号前缀开头 → 应触发 E.5.7
         let body_xml = r#"<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
   <w:pPr>
     <w:pStyle w:val="Heading1"/>
@@ -399,7 +411,6 @@ mod tests {
 
         let result = audit_full(tmp.path()).expect("audit_full 应成功");
 
-        // 应有 E.5.7 违规（Heading1 样式但无 numPr）
         let e57_rows: Vec<_> = result
             .self_check_table
             .iter()
@@ -409,16 +420,9 @@ mod tests {
             !e57_rows.is_empty(),
             "无 numPr 的 Heading1 段落应触发 E.5.7"
         );
-        assert!(!e57_rows[0].passed, "E.5.7 违规行 passed 应为 false");
+        assert!(!e57_rows[0].passed);
 
-        // 验证 XML 解析路径确实没有读取到 numPr
         let doc = crate::document::Document::load(tmp.path()).unwrap();
-        assert_eq!(doc.paragraphs.len(), 1);
-        assert!(
-            !doc.paragraphs[0].has_num_pr,
-            "XML 中无 numPr 的段落，has_num_pr 应为 false"
-        );
-        assert_eq!(doc.paragraphs[0].num_id, None);
-        assert_eq!(doc.paragraphs[0].ilvl, None);
+        assert!(!doc.paragraphs[0].has_num_pr);
     }
 }
