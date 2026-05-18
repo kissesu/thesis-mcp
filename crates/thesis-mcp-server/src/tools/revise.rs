@@ -199,8 +199,8 @@ pub fn run_revise(params: &ReviseParams) -> Result<ReviseOutput> {
             audit_result.violations_count
         );
         anyhow::bail!(
-            "审计未通过：{} 条 Critical 违规；原文件未修改",
-            audit_result.violations_count
+            "{}",
+            crate::tools::audit_format::format_audit_failure(&audit_result)
         );
     }
 

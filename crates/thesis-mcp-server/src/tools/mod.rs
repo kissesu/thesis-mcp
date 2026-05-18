@@ -4,6 +4,7 @@
 //! @date 2026-05-17
 
 pub mod audit;
+pub mod audit_format;
 pub mod init;
 pub mod revise;
 pub mod write_section;
