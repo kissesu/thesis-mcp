@@ -363,14 +363,23 @@ pub fn run() -> i32 {
             eprintln!("{reason}");
             2
         }
+        Decision::AllowWithWarning(msg) => {
+            eprintln!("{msg}");
+            0
+        }
         Decision::Allow => 0,
     }
 }
 
 /// 拦截决策结果。
+///
+/// - `Block(msg)`：阻断工具调用，msg 输出到 stderr 并以 exit 2 退出
+/// - `AllowWithWarning(msg)`：放行工具调用，但 msg 输出到 stderr 作为提示（exit 0）
+/// - `Allow`：完全静默放行（exit 0）
 #[derive(Debug, PartialEq)]
 pub enum Decision {
     Block(String),
+    AllowWithWarning(String),
     Allow,
 }
 
@@ -490,10 +499,15 @@ fn is_bash_whitelisted(command: &str) -> bool {
     false
 }
 
-/// 检查 Agent 工具（HC-11）。
+/// 检查 Agent 工具（HC-11，自 CC 2.1.133 起降级为警告）。
 ///
-/// 子 agent 不继承 thesis skill、不触发父会话 hook，
-/// 若 prompt 含 thesis 域关键词说明试图绕过门禁。
+/// 历史背景：原始 HC-11 假设子 agent 不继承 skill 也不触发父 hook，
+/// 因此 prompt 含 thesis 域关键词时阻断委派。
+///
+/// 2026-05-18 更新：Claude Code 2.1.133 起子 agent 能发现并使用 user/project/plugin
+/// 的 skill；后续版本中子 agent 工具调用也会触发父会话 hook。原始阻断的前提消失，
+/// 因此本检查从 `Block` 降级为 `AllowWithWarning` —— 放行但提醒 Claude 子 agent
+/// 必须遵守 thesis 规矩（自检表、F 系修订等）。
 fn check_agent(input: &HookInput) -> Decision {
     // 优先检查 prompt 字段，其次检查 description
     let text = {
@@ -512,10 +526,12 @@ fn check_agent(input: &HookInput) -> Decision {
 
     let matched = AGENT_BLOCK_PATTERNS.iter().any(|p| p.is_match(&text));
     if matched {
-        Decision::Block(
-            "[thesis-hook] 拦截：Agent 工具 prompt 含 thesis 域关键词（HC-11）。\n\
-             子 agent 不继承 thesis skill，不触发父会话 hook，不读 HARD-GATE。\n\
-             请在当前会话中直接使用 mcp__thesis__* 工具完成论文操作。"
+        Decision::AllowWithWarning(
+            "[thesis-hook] 提示：Agent 工具 prompt 含 thesis 域关键词（HC-11）。\n\
+             子 agent 会继承 thesis skill 与父会话 hook（CC 2.1.133+），但仍需明确：\n\
+             - 写 docx 必须走 mcp__thesis__write_section 或 mcp__thesis__revise\n\
+             - 不得用 Bash 直接 python/zip/cp/mv 操作 docx\n\
+             - 子 agent 完成后请确保产出经过审计且生成 manifest"
                 .to_owned(),
         )
     } else {
@@ -771,28 +787,28 @@ pub mod tests {
     // ---- Agent ----
 
     #[test]
-    fn blocks_agent_with_thesis_keyword() {
-        // HC-11: subagent 含 thesis 关键词
+    fn warns_agent_with_thesis_keyword() {
+        // HC-11 自 CC 2.1.133 起降级为警告（子 agent 能继承 skill 与 hook）
         let input = make_input(
             "Agent",
             json!({ "prompt": "go write the thesis chapter 2" }),
         );
-        assert!(matches!(check(&input), Decision::Block(_)));
+        assert!(matches!(check(&input), Decision::AllowWithWarning(_)));
     }
 
     #[test]
-    fn blocks_agent_with_chinese_thesis_keyword() {
+    fn warns_agent_with_chinese_thesis_keyword() {
         let input = make_input("Agent", json!({ "prompt": "帮我写论文第三章" }));
-        assert!(matches!(check(&input), Decision::Block(_)));
+        assert!(matches!(check(&input), Decision::AllowWithWarning(_)));
     }
 
     #[test]
-    fn blocks_agent_with_docx_keyword() {
+    fn warns_agent_with_docx_keyword() {
         let input = make_input(
             "Agent",
             json!({ "prompt": "edit the docx file and add a table" }),
         );
-        assert!(matches!(check(&input), Decision::Block(_)));
+        assert!(matches!(check(&input), Decision::AllowWithWarning(_)));
     }
 
     #[test]
@@ -1197,13 +1213,14 @@ mod adversarial {
     }
 
     // ============================================================
-    // 测试 #3：子 agent 委托处理论文文档（HC-11）
+    // 测试 #3：子 agent 委托处理论文文档（HC-11，警告级）
     // ============================================================
 
-    /// 攻击前提：Claude 意识到父会话有 thesis hook，于是试图将写论文任务
-    /// 委托给子 agent。子 agent 不继承父会话 hook，可能绕过检测。
+    /// 攻击前提（历史）：Claude 试图把写论文任务委托给子 agent 绕过父会话 hook。
     ///
-    /// 预期：hook 必须拦截（HC-11：Agent 工具 + thesis 关键词 → 拦截）。
+    /// CC 2.1.133 起子 agent 能继承 skill 与 hook，原始绕过路径被堵；
+    /// HC-11 因此从 `Block` 降级为 `AllowWithWarning` —— 仍要让 Claude 看到
+    /// "你派出去的子 agent 必须按 thesis 规矩走" 的提醒。
     #[test]
     fn adv03_subagent_delegation() {
         let input = make(
@@ -1211,8 +1228,8 @@ mod adversarial {
             json!({ "prompt": "go process the thesis document please and update it" }),
         );
         assert!(
-            matches!(check(&input), Decision::Block(_)),
-            "HC-11：Agent 委托 + thesis 关键词必须被拦截"
+            matches!(check(&input), Decision::AllowWithWarning(_)),
+            "HC-11：Agent 委托 + thesis 关键词应放行并提醒（CC 2.1.133+ 子 agent 继承 skill/hook）"
         );
     }
 
