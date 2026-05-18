@@ -40,19 +40,44 @@ fi
 # 常量
 # ─────────────────────────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 HOOKS_DIR="${HOME}/.claude/hooks"
+SKILLS_DIR="${HOME}/.claude/skills"
 SETTINGS_JSON="${HOME}/.claude/settings.json"
 CLAUDE_JSON="${HOME}/.claude.json"
-
-MCP_SERVER_BIN="${PROJECT_DIR}/target/release/thesis-mcp-server"
-HOOK_BIN="${PROJECT_DIR}/target/release/thesis-hook"
 
 HOOK_LINK_MCP="${HOOKS_DIR}/thesis-mcp-server"
 HOOK_LINK_HOOK="${HOOKS_DIR}/thesis-hook"
 
 MCP_ENTRY_KEY="thesis"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 安装模式自检（v0.1.3 起支持 tarball 模式）
+#
+# tarball 模式：install.sh 在 tarball 解压目录，binary 在 ${SCRIPT_DIR}/bin/
+#   适用：用户下载 release tarball 后解压并运行本脚本
+#
+# dev 模式：install.sh 在项目 scripts/ 子目录，binary 在 ${PROJECT_DIR}/target/release/
+#   适用：开发者本地 cargo build 后运行本脚本
+# ─────────────────────────────────────────────────────────────────────────────
+if [[ -x "${SCRIPT_DIR}/bin/thesis-hook" ]] && [[ -x "${SCRIPT_DIR}/bin/thesis-mcp-server" ]]; then
+    INSTALL_MODE="tarball"
+    PROJECT_DIR="$SCRIPT_DIR"
+    MCP_SERVER_BIN="${SCRIPT_DIR}/bin/thesis-mcp-server"
+    HOOK_BIN="${SCRIPT_DIR}/bin/thesis-hook"
+    SKILL_SRC="${SCRIPT_DIR}/skills/thesis"
+elif [[ -f "${SCRIPT_DIR}/../Cargo.toml" ]]; then
+    INSTALL_MODE="dev"
+    PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+    MCP_SERVER_BIN="${PROJECT_DIR}/target/release/thesis-mcp-server"
+    HOOK_BIN="${PROJECT_DIR}/target/release/thesis-hook"
+    SKILL_SRC="${PROJECT_DIR}/skills/thesis"
+else
+    echo "[ERROR] 无法识别安装模式：" >&2
+    echo "  既无 ${SCRIPT_DIR}/bin/{thesis-hook,thesis-mcp-server} (tarball 模式)" >&2
+    echo "  也无 ${SCRIPT_DIR}/../Cargo.toml (dev 模式)" >&2
+    exit 1
+fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 参数解析
@@ -101,7 +126,8 @@ check_deps() {
     if ! command -v jq &>/dev/null; then
         err "缺少 jq。请先安装：brew install jq"
     fi
-    if ! command -v cargo &>/dev/null; then
+    # cargo 只在 dev 模式下必需（tarball 模式跳过编译）
+    if [[ "$INSTALL_MODE" == "dev" ]] && ! command -v cargo &>/dev/null; then
         err "缺少 cargo（Rust 工具链）。请先安装：https://rustup.rs"
     fi
 }
@@ -128,24 +154,29 @@ backup_settings() {
 # 安装流程
 # ─────────────────────────────────────────────────────────────────────────────
 do_install() {
+    log "安装模式: $INSTALL_MODE"
     log "项目目录: $PROJECT_DIR"
     log "=========================================="
 
-    # 1. 编译
-    log "步骤 1/5: cargo build --release --workspace"
-    run "cd '$PROJECT_DIR' && cargo build --release --workspace"
+    # 1. 编译（仅 dev 模式；tarball 模式 binary 已预编译）
+    if [[ "$INSTALL_MODE" == "dev" ]]; then
+        log "步骤 1/6: cargo build --release --workspace"
+        run "cd '$PROJECT_DIR' && cargo build --release --workspace"
+    else
+        log "步骤 1/6: tarball 模式跳过编译（binary 已预编译）"
+    fi
 
     # 2. 校验二进制存在
     if ! $DRY_RUN; then
-        [[ -f "$MCP_SERVER_BIN" ]] || err "编译产物不存在: $MCP_SERVER_BIN"
-        [[ -f "$HOOK_BIN" ]]       || err "编译产物不存在: $HOOK_BIN"
+        [[ -f "$MCP_SERVER_BIN" ]] || err "二进制不存在: $MCP_SERVER_BIN"
+        [[ -f "$HOOK_BIN" ]]       || err "二进制不存在: $HOOK_BIN"
     fi
-    log "步骤 2/5: 找到二进制"
+    log "步骤 2/6: 找到二进制"
     $DRY_RUN && drylog "  $MCP_SERVER_BIN" || log "  $MCP_SERVER_BIN"
     $DRY_RUN && drylog "  $HOOK_BIN"       || log "  $HOOK_BIN"
 
     # 3. 创建 hooks 目录 + 软链
-    log "步骤 3/5: 建立软链到 $HOOKS_DIR"
+    log "步骤 3/6: 建立软链到 $HOOKS_DIR"
     run "mkdir -p '$HOOKS_DIR'"
     run "ln -sf '$MCP_SERVER_BIN' '$HOOK_LINK_MCP'"
     run "ln -sf '$HOOK_BIN'       '$HOOK_LINK_HOOK'"
@@ -154,12 +185,25 @@ do_install() {
         log "  $HOOK_LINK_HOOK → $HOOK_BIN"
     fi
 
-    # 4. 注册 MCP server 到 ~/.claude.json
-    log "步骤 4/5: 注册 MCP server 到 $CLAUDE_JSON"
+    # 4. 安装 skill 到 ~/.claude/skills/thesis/
+    log "步骤 4/6: 安装 skill 到 $SKILLS_DIR/thesis"
+    if [[ -d "$SKILL_SRC" ]]; then
+        run "mkdir -p '$SKILLS_DIR'"
+        run "rm -rf '$SKILLS_DIR/thesis'"
+        run "cp -r '$SKILL_SRC' '$SKILLS_DIR/thesis'"
+        if ! $DRY_RUN; then
+            log "  $SKILLS_DIR/thesis ← $SKILL_SRC"
+        fi
+    else
+        log "  跳过：skill 源不存在 $SKILL_SRC"
+    fi
+
+    # 5. 注册 MCP server 到 ~/.claude.json
+    log "步骤 5/6: 注册 MCP server 到 $CLAUDE_JSON"
     register_mcp_server
 
-    # 5. 注册 hooks 到 settings.json
-    log "步骤 5/5: 注册 hooks 到 $SETTINGS_JSON"
+    # 6. 注册 hooks 到 settings.json
+    log "步骤 6/6: 注册 hooks 到 $SETTINGS_JSON"
     register_hooks
 
     log "=========================================="
@@ -283,7 +327,7 @@ do_uninstall() {
     log "=========================================="
 
     # 1. 删除软链
-    log "步骤 1/3: 移除软链"
+    log "步骤 1/4: 移除软链"
     for link in "${HOOKS_DIR}"/thesis-*; do
         if [[ -L "$link" ]]; then
             run "rm '$link'"
@@ -292,8 +336,17 @@ do_uninstall() {
     done
     $DRY_RUN && drylog "would remove ${HOOKS_DIR}/thesis-* symlinks"
 
-    # 2. 从 ~/.claude.json 移除 mcpServers 条目
-    log "步骤 2/3: 从 $CLAUDE_JSON 移除 mcpServers[\"$MCP_ENTRY_KEY\"]"
+    # 2. 删除 skill（v0.1.3 起 install.sh 安装 skill 到 ~/.claude/skills/thesis）
+    log "步骤 2/4: 移除 skill ${SKILLS_DIR}/thesis"
+    if [[ -d "${SKILLS_DIR}/thesis" ]]; then
+        run "rm -rf '${SKILLS_DIR}/thesis'"
+        $DRY_RUN || log "  已删除 ${SKILLS_DIR}/thesis"
+    else
+        log "  跳过：${SKILLS_DIR}/thesis 不存在"
+    fi
+
+    # 3. 从 ~/.claude.json 移除 mcpServers 条目
+    log "步骤 3/4: 从 $CLAUDE_JSON 移除 mcpServers[\"$MCP_ENTRY_KEY\"]"
     if $DRY_RUN; then
         drylog "would remove mcpServers[\"$MCP_ENTRY_KEY\"] from $CLAUDE_JSON"
     elif [[ -f "$CLAUDE_JSON" ]]; then
@@ -305,8 +358,8 @@ do_uninstall() {
         log "  已移除 mcpServers[\"$MCP_ENTRY_KEY\"]"
     fi
 
-    # 3. 从 settings.json 移除 thesis-hook 条目
-    log "步骤 3/3: 从 $SETTINGS_JSON 移除 thesis-hook 条目"
+    # 4. 从 settings.json 移除 thesis-hook 条目
+    log "步骤 4/4: 从 $SETTINGS_JSON 移除 thesis-hook 条目"
     if $DRY_RUN; then
         drylog "would remove thesis-hook hook entries from $SETTINGS_JSON"
     elif [[ -f "$SETTINGS_JSON" ]]; then

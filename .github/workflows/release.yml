@@ -73,9 +73,15 @@ jobs:
         run: |
           VERSION="${GITHUB_REF#refs/tags/v}"
           ARCHIVE="thesis-mcp-${VERSION}-${{ matrix.target }}.tar.gz"
-          mkdir -p package
-          cp target/${{ matrix.target }}/release/thesis-hook package/
-          cp target/${{ matrix.target }}/release/thesis-mcp-server package/
+          # 自 v0.1.3 起：tarball 含 install.sh + bin/ + skills/，用户解压即可装
+          mkdir -p package/bin package/skills
+          cp target/${{ matrix.target }}/release/thesis-hook package/bin/
+          cp target/${{ matrix.target }}/release/thesis-mcp-server package/bin/
+          chmod +x package/bin/thesis-hook package/bin/thesis-mcp-server
+          cp scripts/install.sh package/
+          chmod +x package/install.sh
+          cp -r skills/thesis package/skills/
+          cp README.md package/
           tar -czf "$ARCHIVE" -C package .
           if command -v sha256sum >/dev/null; then
             sha256sum "$ARCHIVE" | awk '{print $1}' > "$ARCHIVE.sha256"
@@ -90,9 +96,13 @@ jobs:
         run: |
           VERSION="${GITHUB_REF#refs/tags/v}"
           ARCHIVE="thesis-mcp-${VERSION}-${{ matrix.target }}.zip"
-          mkdir -p package
-          cp target/${{ matrix.target }}/release/thesis-hook.exe package/
-          cp target/${{ matrix.target }}/release/thesis-mcp-server.exe package/
+          # 自 v0.1.3 起：tarball 含 install.sh + bin/ + skills/。Windows 用户需 git-bash / wsl 运行 install.sh
+          mkdir -p package/bin package/skills
+          cp target/${{ matrix.target }}/release/thesis-hook.exe package/bin/
+          cp target/${{ matrix.target }}/release/thesis-mcp-server.exe package/bin/
+          cp scripts/install.sh package/
+          cp -r skills/thesis package/skills/
+          cp README.md package/
           7z a "$ARCHIVE" ./package/* >/dev/null
           certutil -hashfile "$ARCHIVE" SHA256 | sed -n '2p' | tr -d ' \r' > "$ARCHIVE.sha256"
           echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
