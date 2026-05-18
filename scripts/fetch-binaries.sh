@@ -221,4 +221,10 @@ fi
 # 二进制设可执行权限（Windows 上无意义但无害）
 chmod +x "$DEST_DIR"/thesis-hook* "$DEST_DIR"/thesis-mcp-server* 2>/dev/null || true
 
+# macOS: 清除 quarantine 扩展属性（防 Gatekeeper 弹"无法验证开发者"框）
+# 来源：浏览器/curl 下载的 tarball 会被打上 com.apple.quarantine flag
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    xattr -dr com.apple.quarantine "$DEST_DIR" 2>/dev/null || true
+fi
+
 echo "[fetch-binaries] 完成：$DEST_DIR" >&2
