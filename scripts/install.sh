@@ -176,14 +176,15 @@ do_install() {
     $DRY_RUN && drylog "  $HOOK_BIN"       || log "  $HOOK_BIN"
 
     # 2.5. 清除 macOS quarantine 扩展属性
-    # 浏览器/curl 下载的 tarball 解压后，binary 会带 com.apple.quarantine flag，
+    # 浏览器/curl 下载的 tarball 解压后，binary 与父目录都会带 com.apple.quarantine flag，
     # 导致 Gatekeeper 每次 spawn MCP server 时弹"无法验证开发者"授权框。
     # ad-hoc 签名解决不了这个 —— 必须显式移除 quarantine。
+    # 注意：必须清整个 $PROJECT_DIR（解压根目录），不能只清两个 binary。
+    # macOS 解压时父目录本身也会被打 quarantine，单清文件 → 父目录残留。
     # tarball 模式才需要清；dev 模式 cargo build 出来的 binary 不带 quarantine（无害）。
     if [[ "$(uname -s)" == "Darwin" ]]; then
         log "步骤 2.5/6: 清除 macOS quarantine 扩展属性"
-        run "xattr -dr com.apple.quarantine '$MCP_SERVER_BIN' 2>/dev/null || true"
-        run "xattr -dr com.apple.quarantine '$HOOK_BIN' 2>/dev/null || true"
+        run "xattr -dr com.apple.quarantine '$PROJECT_DIR' 2>/dev/null || true"
     fi
 
     # 3. 创建 hooks 目录 + 软链
