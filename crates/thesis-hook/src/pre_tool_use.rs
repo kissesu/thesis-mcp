@@ -12,7 +12,12 @@
 //! 1. ~/.claude/hooks/thesis* — hook 二进制本身
 //! 2. ~/.claude/skills/thesis* — thesis skill 目录
 //! 3. ~/.local/share/claude/projects/*/memory/*thesis* — 项目记忆文件
-//! 4. cwd/crates/** 或 cwd/src/**（当 cwd 路径含 "thesis"）— 源码树
+//!
+//! 已删除的规则（2026-05-18）：
+//! - 原规则 4 "cwd/crates/** 或 cwd/src/**（cwd 含 thesis）" 已删除。
+//!   理由：thesis-mcp 项目源码不是运行时防御层（改源码必须 cargo build +
+//!   重装才能影响运行时，规则 1 已堵住 install 写入路径）。规则 4 误伤
+//!   任何含 "thesis" 字串的项目（如 thesis-tool-rust），弊大于利。
 //!
 //! @author Atlas.oi
 //! @date 2026-05-17
@@ -117,12 +122,16 @@ static AGENT_BLOCK_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
 /// 1. `~/.claude/hooks/thesis*`
 /// 2. `~/.claude/skills/thesis*`
 /// 3. `~/.local/share/claude/projects/*/memory/*thesis*`
-/// 4. `{cwd}/crates/**` 或 `{cwd}/src/**`（仅当 cwd 含 "thesis" 字样）
+///
+/// 历史：原规则 4 `{cwd}/crates/** | {cwd}/src/**`（cwd 含 thesis）于 2026-05-18 删除，
+/// 因其会误伤任何含 "thesis" 字串目录的其他项目（如 thesis-tool-rust）。
+/// thesis-mcp 项目源码不是运行时防御层，改源码必须 cargo build + 重装才能生效，
+/// 规则 1 已堵住 install 写入路径。
 ///
 /// # 参数
 /// - `path`: 规范化后的目标路径字符串（含 ~ 展开或绝对路径）
-/// - `cwd`: 当前工作目录（从 hook input 取得，可能为空字符串）
-pub(crate) fn is_self_protect_path(path: &str, cwd: &str) -> bool {
+/// - `_cwd`: 当前工作目录（保留参数以保持调用方签名兼容；现已不再消费）
+pub(crate) fn is_self_protect_path(path: &str, _cwd: &str) -> bool {
     // 获取 HOME，失败则 fail-closed
     let home = match std::env::var("HOME") {
         Ok(h) if !h.is_empty() => h,
@@ -159,16 +168,6 @@ pub(crate) fn is_self_protect_path(path: &str, cwd: &str) -> bool {
             if after_memory.contains("thesis") {
                 return true;
             }
-        }
-    }
-
-    // === 规则 4：cwd/crates/** 或 cwd/src/**（cwd 路径含 "thesis"）===
-    if !cwd.is_empty() && cwd.contains("thesis") {
-        // 判断目标路径是否在 cwd/crates/ 或 cwd/src/ 之下
-        let crates_prefix = format!("{}/crates/", cwd.trim_end_matches('/'));
-        let src_prefix = format!("{}/src/", cwd.trim_end_matches('/'));
-        if target.starts_with(&crates_prefix) || target.starts_with(&src_prefix) {
-            return true;
         }
     }
 
@@ -921,36 +920,26 @@ pub mod tests {
     }
 
     #[test]
-    fn hc22_blocks_crates_when_cwd_is_thesis_project() {
-        // 规则 4：cwd 含 thesis 时，cwd/crates/ 下的文件应被拦截
-        let cwd = "/Users/oi/Code/thesis-mcp";
-        let target = format!("{cwd}/crates/thesis-hook/src/pre_tool_use.rs");
-        assert!(
-            is_self_protect_path(&target, cwd),
-            "thesis-mcp 项目的 crates/ 下文件应被自保护拦截"
-        );
-    }
-
-    #[test]
-    fn hc22_blocks_src_when_cwd_is_thesis_project() {
-        // 规则 4：cwd 含 thesis 时，cwd/src/ 下的文件应被拦截
-        let cwd = "/Users/oi/Code/thesis-mcp";
-        let target = format!("{cwd}/src/main.rs");
-        assert!(
-            is_self_protect_path(&target, cwd),
-            "thesis-mcp 项目的 src/ 下文件应被自保护拦截"
-        );
-    }
-
-    #[test]
-    fn hc22_allows_crates_in_non_thesis_project() {
-        // 规则 4 负例：cwd 不含 thesis 时，cwd/crates/ 不应拦截
-        let cwd = "/Users/oi/Code/my-app";
-        let target = format!("{cwd}/crates/core/src/lib.rs");
-        assert!(
-            !is_self_protect_path(&target, cwd),
-            "非 thesis 项目的 crates/ 不应被拦截"
-        );
+    fn hc22_allows_crates_in_any_project_including_thesis_named() {
+        // 规则 4 已删除（2026-05-18）：任何项目的 crates/ 与 src/ 都不再被 HC-22 自保护
+        // 拦截，包括目录名含 "thesis" 的项目（如 thesis-mcp 自身、thesis-tool-rust 等）。
+        // 防御层资产由规则 1/2/3 完全覆盖（运行时 hooks/skills/memory 路径）。
+        for cwd in [
+            "/Users/oi/Code/my-app",
+            "/Users/oi/Code/thesis-mcp",
+            "/Users/oi/Code/thesis-tool-rust",
+        ] {
+            let target = format!("{cwd}/crates/core/src/lib.rs");
+            assert!(
+                !is_self_protect_path(&target, cwd),
+                "项目 crates/ 下文件不应被自保护拦截（cwd={cwd}）"
+            );
+            let src_target = format!("{cwd}/src/main.rs");
+            assert!(
+                !is_self_protect_path(&src_target, cwd),
+                "项目 src/ 下文件不应被自保护拦截（cwd={cwd}）"
+            );
+        }
     }
 
     #[test]
@@ -1041,18 +1030,21 @@ pub mod tests {
     }
 
     #[test]
-    fn hc22_blocks_write_to_crates_in_thesis_cwd() {
-        // cwd 含 thesis-mcp 时，Write 指向 cwd/crates/... 应被 HC-22 拦截（规则 4）
+    fn hc22_allows_write_to_crates_in_thesis_cwd() {
+        // 规则 4 删除后（2026-05-18）：cwd 含 thesis 时 Write 到 crates/ 不再被拦截。
+        // 这恢复了 thesis-mcp 项目自身的开发能力，并消除了对其他含 thesis 字串
+        // 目录（如 thesis-tool-rust）的误伤。
         let cwd = "/Users/oi/Code/thesis-mcp";
         let target = format!("{cwd}/crates/thesis-hook/src/pre_tool_use.rs");
         let input = make_input_with_cwd(
             "Write",
-            json!({ "file_path": target, "content": "evil" }),
+            json!({ "file_path": target, "content": "fix bug" }),
             cwd,
         );
-        assert!(
-            matches!(check(&input), Decision::Block(_)),
-            "cwd=thesis-mcp 时，Write 到 crates/ 应被 HC-22 拦截"
+        assert_eq!(
+            check(&input),
+            Decision::Allow,
+            "cwd=thesis-mcp 时，Write 到 crates/ 应放行（规则 4 已删）"
         );
     }
 
