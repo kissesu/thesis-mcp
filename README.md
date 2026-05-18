@@ -56,6 +56,48 @@ claude plugin uninstall thesis-mcp
 
 ---
 
+## 离线 / 受限网络 / 私有仓库（v0.1.2+）
+
+`fetch-binaries.sh` 按以下优先级获取预编译 binary tarball，第一个成功的胜出：
+
+| 优先级 | 来源 | 触发条件 |
+|---|---|---|
+| 1 | `$THESIS_MCP_LOCAL_TARBALL` 指向的文件 | 显式 `export` 指定 |
+| 2 | `~/Downloads/thesis-mcp-${VERSION}-${TARGET}.tar.gz` | 浏览器下载到默认位置 |
+| 3 | `gh release download v$VERSION --repo $REPO` | gh CLI 已 `gh auth login` |
+| 4 | `curl` 匿名直拉 release URL | 公开仓库 + 联网 |
+| 失败 | 输出**确切的下载 URL + 期望放置路径**，由用户手动救援 | — |
+
+### 场景示例
+
+**场景 A：浏览器手动下载（最常见）**
+
+```bash
+# 1. 浏览器打开 https://github.com/kissesu/thesis-mcp/releases/tag/v0.1.2
+# 2. 下载对应平台的 tarball + .sha256 到 ~/Downloads/
+# 3. 跑 plugin install — 自动认本地 Downloads
+claude plugin install kissesu/thesis-mcp
+```
+
+**场景 B：指定任意路径**
+
+```bash
+export THESIS_MCP_LOCAL_TARBALL=~/cache/thesis-mcp-0.1.2-aarch64-apple-darwin.tar.gz
+claude plugin install kissesu/thesis-mcp
+```
+
+**场景 C：私有仓库（仓库 owner 把 repo 切私有后）**
+
+```bash
+gh auth login   # 选 HTTPS + browser auth
+claude plugin install kissesu/thesis-mcp
+# fetch-binaries.sh 自动调 gh release download，复用 gh 的 auth token
+```
+
+`sha256` 校验文件**必须**与 tarball 同时提供（环境变量 / Downloads 路径 / release 中），缺失则脚本拒绝继续（防伪造）。
+
+---
+
 ## 开发者本地构建（dev fallback）
 
 只在以下场景需要：

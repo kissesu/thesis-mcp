@@ -60,20 +60,126 @@ TMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 # ============================================================
-# 下载 tarball + sha256
+# 获取 tarball + sha256（多优先级 fetch）
+#
+# 优先级（按顺序尝试，第一个成功的胜出）：
+# 1. ${THESIS_MCP_LOCAL_TARBALL} 环境变量指向的文件（用户明确指定）
+# 2. ~/Downloads/${ARCHIVE}（用户从浏览器下载到默认位置）
+# 3. gh release download（私有仓库 + 已 gh auth login）
+# 4. curl anonymous（公开仓库 + 联网）
+# 全失败 → 明确手动下载指引
 # ============================================================
-echo "[fetch-binaries] 下载 $URL" >&2
-if ! curl -fLo "${TMP_DIR}/${ARCHIVE}" "$URL"; then
-    echo "[fetch-binaries] 错误：下载失败。请检查仓库 $REPO release v$VERSION 是否包含 $ARCHIVE。" >&2
-    echo "  若是私有仓库，需先 gh auth login 并设置 GH_TOKEN 环境变量。" >&2
+
+TARBALL_PATH="${TMP_DIR}/${ARCHIVE}"
+SHA_PATH="${TMP_DIR}/${ARCHIVE}.sha256"
+FETCH_METHOD=""
+
+# --- 优先级 1：环境变量指定的本地 tarball ---
+if [ -n "${THESIS_MCP_LOCAL_TARBALL:-}" ]; then
+    if [ -f "${THESIS_MCP_LOCAL_TARBALL}" ]; then
+        echo "[fetch-binaries] 使用 THESIS_MCP_LOCAL_TARBALL: ${THESIS_MCP_LOCAL_TARBALL}" >&2
+        cp "${THESIS_MCP_LOCAL_TARBALL}" "$TARBALL_PATH"
+        # 同目录找 .sha256（约定）
+        if [ -f "${THESIS_MCP_LOCAL_TARBALL}.sha256" ]; then
+            cp "${THESIS_MCP_LOCAL_TARBALL}.sha256" "$SHA_PATH"
+        fi
+        FETCH_METHOD="local-env"
+    else
+        echo "[fetch-binaries] 错误：THESIS_MCP_LOCAL_TARBALL 指向的文件不存在：${THESIS_MCP_LOCAL_TARBALL}" >&2
+        exit 1
+    fi
+fi
+
+# --- 优先级 2：~/Downloads/${ARCHIVE} ---
+if [ -z "$FETCH_METHOD" ] && [ -n "${HOME:-}" ]; then
+    DL_TARBALL="${HOME}/Downloads/${ARCHIVE}"
+    if [ -f "$DL_TARBALL" ]; then
+        echo "[fetch-binaries] 发现本地下载 tarball: $DL_TARBALL" >&2
+        cp "$DL_TARBALL" "$TARBALL_PATH"
+        if [ -f "${DL_TARBALL}.sha256" ]; then
+            cp "${DL_TARBALL}.sha256" "$SHA_PATH"
+        fi
+        FETCH_METHOD="local-downloads"
+    fi
+fi
+
+# --- 优先级 3：gh release download（私有仓库友好）---
+if [ -z "$FETCH_METHOD" ] && command -v gh >/dev/null 2>&1 \
+        && gh auth status >/dev/null 2>&1; then
+    echo "[fetch-binaries] 尝试 gh release download (已 gh auth)..." >&2
+    if (cd "$TMP_DIR" && gh release download "v$VERSION" \
+            --repo "$REPO" \
+            --pattern "$ARCHIVE" \
+            --pattern "${ARCHIVE}.sha256" \
+            --clobber >/dev/null 2>&1); then
+        echo "[fetch-binaries] gh release download 成功" >&2
+        FETCH_METHOD="gh-release"
+    else
+        echo "[fetch-binaries] gh download 失败，回退 anonymous curl" >&2
+    fi
+fi
+
+# --- 优先级 4：curl anonymous ---
+if [ -z "$FETCH_METHOD" ]; then
+    echo "[fetch-binaries] anonymous curl: $URL" >&2
+    if curl -fLo "$TARBALL_PATH" "$URL" 2>/dev/null \
+            && curl -fLo "$SHA_PATH" "$SHA_URL" 2>/dev/null; then
+        FETCH_METHOD="curl-anonymous"
+    fi
+fi
+
+# --- 全失败：明确手动下载指引 ---
+if [ -z "$FETCH_METHOD" ] || [ ! -f "$TARBALL_PATH" ] || [ ! -f "$SHA_PATH" ]; then
+    cat >&2 <<EOF
+[fetch-binaries] 错误：所有 fetch 路径均失败
+
+可能原因：
+  - 仓库 $REPO 私有但未配 gh auth（gh CLI 缺失 或 未登录）
+  - 网络受限（无法访问 github.com）
+  - release v$VERSION 不存在或不含 $ARCHIVE
+
+手动救援方案（任选其一）：
+
+  方案 A. 浏览器下载到 ~/Downloads/（最简）
+    访问：$URL
+    保存为：${HOME:-~}/Downloads/${ARCHIVE}
+    同时下载 sha256：$SHA_URL → ${HOME:-~}/Downloads/${ARCHIVE}.sha256
+    然后重跑当前命令（或重新触发 plugin install）
+
+  方案 B. 用 THESIS_MCP_LOCAL_TARBALL 指定路径
+    下载 tarball 后：
+      export THESIS_MCP_LOCAL_TARBALL=/path/to/${ARCHIVE}
+    然后重跑
+
+  方案 C. 私有仓库先 gh login
+    gh auth login   # 选 HTTPS + browser auth
+    然后重跑
+
+EOF
     exit 1
 fi
 
-echo "[fetch-binaries] 下载 sha256: $SHA_URL" >&2
-if ! curl -fLo "${TMP_DIR}/${ARCHIVE}.sha256" "$SHA_URL"; then
-    echo "[fetch-binaries] 错误：未找到 sha256 校验文件" >&2
-    exit 1
+# sha256 可能因优先级 1/2 未提供 → 尝试单独 fetch 一次
+if [ ! -f "$SHA_PATH" ]; then
+    echo "[fetch-binaries] tarball 已就绪但缺 sha256，尝试单独 fetch..." >&2
+    if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+        (cd "$TMP_DIR" && gh release download "v$VERSION" --repo "$REPO" \
+            --pattern "${ARCHIVE}.sha256" --clobber >/dev/null 2>&1) || true
+    fi
+    if [ ! -f "$SHA_PATH" ]; then
+        curl -fLo "$SHA_PATH" "$SHA_URL" 2>/dev/null || true
+    fi
+    if [ ! -f "$SHA_PATH" ]; then
+        echo "[fetch-binaries] 警告：sha256 校验文件缺失，跳过校验（不推荐，但 tarball 已就绪）" >&2
+        echo "  本地 tarball 来源：$FETCH_METHOD" >&2
+        # 写一个空 sha 触发后续 sha 比对失败 → exit 1
+        # 或者：跳过校验。为安全考虑应失败。
+        echo "[fetch-binaries] 错误：sha256 缺失时拒绝继续（防伪造）。请提供 ${ARCHIVE}.sha256。" >&2
+        exit 1
+    fi
 fi
+
+echo "[fetch-binaries] tarball 来源：$FETCH_METHOD" >&2
 
 # ============================================================
 # 校验 sha256（macOS 用 shasum，Linux 优先 sha256sum）
