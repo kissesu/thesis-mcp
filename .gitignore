@@ -26,6 +26,9 @@ docs/.backups/
 .env
 .env.local
 
+# Claude Code 项目本地状态（scheduled tasks lock 等）
+.claude/
+
 # 临时备份
 *.bak
 *.swp
