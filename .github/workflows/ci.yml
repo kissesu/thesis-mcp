@@ -1,13 +1,12 @@
 name: ci
 
-# PR / push 触发：fmt + clippy + build + test 全栈质量门
-# 单 runner (Linux x64) 即可，多平台 build 留给 release tag 触发的 release.yml
+# 仅 PR 触发：fmt + clippy + build + test 全栈质量门
+# main push 不跑 CI（节省 Actions 额度）；多平台 build 留给 release tag 触发的 release.yml
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:  # 允许手动触发（用于偶尔在 main 上跑一次验证）
 
 env:
   CARGO_TERM_COLOR: always
