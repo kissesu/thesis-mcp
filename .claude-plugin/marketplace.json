@@ -9,7 +9,7 @@
       "name": "thesis-mcp",
       "source": "./.claude-plugin",
       "description": "中文学术论文写作强制执行层（MCP + Hook + Skill 一体化）",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "author": {
         "name": "Atlas.oi"
       }
