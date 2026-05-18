@@ -265,10 +265,23 @@ fn extract_target_paths_for_self_protect(tool_name: &str, tool_input: &Value) ->
     }
 }
 
-/// 从 Bash 命令字符串中尽力提取可能的写入目标路径。
+/// 已知"写入/修改文件"的 Bash 命令名（basename 匹配）。
 ///
-/// 策略：用 shell-words 解析为 argv token，筛选以 `~` 或 `/` 开头的 token
-/// 以及 `>` 重定向符号后的 token。不求完整，只求覆盖常见攻击向量。
+/// 仅当 argv[0] basename 命中此列表时，extract_bash_target_paths 才把所有
+/// path-like token 当作写入目标检查 self-protect。这避免了 `grep /path/file`、
+/// `cat /path/file`、`~/.claude/hooks/thesis-hook ...` 等纯读/执行命令被误判。
+const WRITE_BASH_COMMANDS: &[&str] = &[
+    "cp", "mv", "rm", "install", "ln", "tee", "dd", "sed", "truncate", "shred", "chmod", "chown",
+    "mkdir", "rmdir", "touch",
+];
+
+/// 从 Bash 命令字符串中提取可能的"写入目标"路径。
+///
+/// 策略（write-vs-exec 区分，避免读/执行命令被 self-protect 误判）：
+/// 1. 始终把重定向符 `>`/`>>`/`1>` 后的 token 视为写入目标（捕获 `cat /x > /target`）
+/// 2. 仅当 argv[0] basename 属于 WRITE_BASH_COMMANDS 时，把所有 `~/...` 或 `/...`
+///    path-like token 一并视为写入目标（捕获 `cp src dst` / `install -m 755 a b`）
+/// 3. 否则不返回路径（命令是读/执行用途，如 grep / cat / ls / 直接执行 binary）
 fn extract_bash_target_paths(command: &str) -> Vec<String> {
     let Ok(tokens) = shell_words::split(command) else {
         return Vec::new();
@@ -277,29 +290,34 @@ fn extract_bash_target_paths(command: &str) -> Vec<String> {
     let mut paths: Vec<String> = Vec::new();
     let mut next_is_redirect_target = false;
 
+    // 第 1 步：始终扫重定向写
     for token in &tokens {
         if token == ">" || token == ">>" || token == "1>" {
-            // 下一个 token 是重定向目标
             next_is_redirect_target = true;
             continue;
         }
-
         if next_is_redirect_target {
             paths.push(token.clone());
             next_is_redirect_target = false;
-            continue;
-        }
-
-        // 绝对路径或 ~ 路径：可能是 cp/mv/install 的目标
-        if token.starts_with('/') || token.starts_with('~') {
-            paths.push(token.clone());
         }
     }
 
-    // 额外把整个命令字符串加入，供 is_self_protect_path 做前缀子串匹配
-    // 处理如：`install -m 755 thesis-hook ~/.claude/hooks/` 这类参数包含保护路径的命令
-    paths.push(command.to_owned());
+    // 第 2 步：argv[0] basename 在写命令列表 → 扫所有 path-like token
+    let argv0_basename = tokens
+        .first()
+        .and_then(|t| std::path::Path::new(t).file_name())
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+    if WRITE_BASH_COMMANDS.contains(&argv0_basename) {
+        for token in &tokens {
+            if token.starts_with('/') || token.starts_with('~') {
+                paths.push(token.clone());
+            }
+        }
+    }
 
+    // 第 3 步：纯执行 / 读取命令（grep / cat / ls / 直接调用 binary 等）→ 返回空
+    // 不再把整个 command 字符串作为 path 检查，避免 path-as-argument 的误判
     paths
 }
 
@@ -1019,6 +1037,87 @@ pub mod tests {
         assert!(
             matches!(check(&input), Decision::Block(_)),
             "cwd=thesis-mcp 时，Write 到 crates/ 应被 HC-22 拦截"
+        );
+    }
+
+    // ============================================================
+    // 实测发现 fix（2026-05-18）：write-vs-exec 区分
+    //
+    // Bug：旧实现把整个 Bash 命令字符串当 path 检查，导致 grep/cat/直接执行 binary
+    // 都被 HC-22 误判为"修改防御层"。
+    // Fix：argv[0] basename 在 WRITE_BASH_COMMANDS 列表时才扫所有 path token；
+    // 重定向 `>` 后的 token 始终扫；其他纯执行/读命令一律放行。
+    // ============================================================
+
+    #[test]
+    fn hc22_bash_exec_thesis_hook_allowed() {
+        // 直接调用 thesis-hook binary（合法开发者测试）应放行
+        let h = home();
+        let input = make_input(
+            "Bash",
+            json!({ "command": format!("{h}/.claude/hooks/thesis-hook pre-tool-use") }),
+        );
+        assert_eq!(
+            check(&input),
+            Decision::Allow,
+            "执行 thesis-hook binary 应放行（非写命令）"
+        );
+    }
+
+    #[test]
+    fn hc22_bash_grep_protected_file_allowed() {
+        // grep 防御层源文件应放行（只读）
+        let input = make_input(
+            "Bash",
+            json!({ "command": "grep -n self_protect /Users/oi/Code/thesis-mcp/crates/thesis-hook/src/pre_tool_use.rs" }),
+        );
+        assert_eq!(
+            check(&input),
+            Decision::Allow,
+            "grep 防御层源文件应放行（grep 不在 WRITE_BASH_COMMANDS）"
+        );
+    }
+
+    #[test]
+    fn hc22_bash_echo_pipe_thesis_hook_allowed() {
+        // echo JSON 管道给 thesis-hook（合法开发者测试）应放行
+        let h = home();
+        let input = make_input(
+            "Bash",
+            json!({ "command": format!("echo '{{}}' | {h}/.claude/hooks/thesis-hook pre-tool-use") }),
+        );
+        assert_eq!(
+            check(&input),
+            Decision::Allow,
+            "echo | thesis-hook 应放行（argv[0]=echo 不在写命令列表）"
+        );
+    }
+
+    #[test]
+    fn hc22_bash_cat_redirect_to_hook_blocked() {
+        // cat > thesis-hook 是重定向写入，必须拦截
+        let h = home();
+        let input = make_input(
+            "Bash",
+            json!({ "command": format!("cat /tmp/evil > {h}/.claude/hooks/thesis-hook") }),
+        );
+        assert!(
+            matches!(check(&input), Decision::Block(_)),
+            "cat 重定向到 thesis-hook 必须拦截（redirect target 命中保护路径）"
+        );
+    }
+
+    #[test]
+    fn hc22_bash_rm_hook_blocked() {
+        // rm thesis-hook 必须拦截（argv[0]=rm 在写命令列表）
+        let h = home();
+        let input = make_input(
+            "Bash",
+            json!({ "command": format!("rm {h}/.claude/hooks/thesis-hook") }),
+        );
+        assert!(
+            matches!(check(&input), Decision::Block(_)),
+            "rm thesis-hook 必须拦截"
         );
     }
 }
