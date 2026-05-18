@@ -25,7 +25,12 @@ jobs:
             runner: macos-14
             cross: false
           - target: x86_64-apple-darwin
-            runner: macos-13
+            # 2026-05-18: 从 macos-13 改 macos-14。macos-13 (Intel) runner 全球
+            # 资源紧张（GitHub 已减配 Intel runner），单 job 排队 46+ 分钟未拿到
+            # runner。macos-14 (Apple Silicon) 通过 rustup target add x86_64-apple-darwin
+            # 在 Silicon 上 cross-compile 到 Intel 是 Rust 原生支持的标准操作，
+            # 不需要 cross crate。产物仍是 x86_64 Intel Mac 可执行。
+            runner: macos-14
             cross: false
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-22.04
