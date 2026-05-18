@@ -99,6 +99,9 @@ pub fn audit_full(docx_path: &Path) -> Result<AuditResult, AuditError> {
         .filter(|p| p.is_dir());
     let blackwords = a_anti_ai::load_blackwords(thesis_dir.as_deref());
 
+    // 非编号章节白名单：摘要 / 目录 / 致谢 / 参考文献等 Heading 段落整段豁免 E.5.7
+    let exempt_headings = e_format::load_exempt_headings(thesis_dir.as_deref());
+
     // ============================================
     // 第三步（补充）：构建编号映射（E.5.7 / E.5.8 增强校验所需）
     // 文档无编号时返回空 Vec，不影响主流程
@@ -126,10 +129,11 @@ pub fn audit_full(docx_path: &Path) -> Result<AuditResult, AuditError> {
     // A.1：主体段落黑词检测
     all_violations.extend(a_anti_ai::check_a1_blackwords(&doc.paragraphs, &blackwords));
 
-    // E.5.7：章节号自动编号检测（附带编号映射做 lvlText 格式验证）
+    // E.5.7：章节号自动编号检测（附带编号映射做 lvlText 格式验证 + 非编号章节白名单豁免）
     all_violations.extend(e_format::check_e57_chapter_numbering(
         &doc.paragraphs,
         numbering_map_opt,
+        &exempt_headings,
     ));
 
     // E.5.8：参考文献自动编号检测（附带编号映射做 lvlText 格式验证）

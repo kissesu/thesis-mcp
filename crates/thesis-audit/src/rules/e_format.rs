@@ -15,11 +15,157 @@
 //! @author Atlas.oi
 //! @date 2026-05-18
 
+use std::path::Path;
+
 use thesis_types::{RuleId, Severity};
+use tracing::warn;
 
 use crate::document::DocParagraph;
 use crate::numbering::NumIdLvlTexts;
 use crate::rules::Violation;
+
+/// 非编号章节白名单文件名，相对于 `thesis_dir`。
+const EXEMPT_HEADINGS_FILENAME: &str = "non_numbered_headings.txt";
+
+// ============================================
+// 非编号章节内置白名单
+//
+// 按 GB/T 7714 与中国高校论文常规规范：
+// 前置部分（封面、声明、摘要、目录）+ 后置部分（结论、参考文献、致谢、附录、索引）
+// 用 Heading 样式但不参与正文章节自动编号。E.5.7 命中时这些段落应豁免。
+//
+// 匹配策略：
+// - normalize_heading_text 去掉所有空白字符（含全角空格 U+3000）+ ASCII 小写化
+// - 段落文本去白后以白名单任一条目（同样去白）开头 → 视为豁免
+// - 仅在段落同时是 Heading 样式时生效（避免正文段落以"摘要"开头被误豁免）
+//
+// 用户可通过 `.thesis/non_numbered_headings.txt` 提供自定义列表覆盖（每行一个）。
+// ============================================
+const EXEMPT_HEADING_NAMES: &[&str] = &[
+    // 中文 — 前置部分
+    "摘要",
+    "中文摘要",
+    "英文摘要",
+    "外文摘要",
+    "关键词",
+    "关键字",
+    "目录",
+    "图目录",
+    "表目录",
+    "插图目录",
+    // 中文 — 后置部分
+    "结论",
+    "结论与展望",
+    "总结",
+    "总结与展望",
+    "参考文献",
+    "致谢",
+    "附录",
+    "索引",
+    "缩略语",
+    "缩略语表",
+    "缩略词表",
+    "符号说明",
+    "符号表",
+    "名词术语表",
+    "攻读硕士学位期间发表的学术论文",
+    "攻读博士学位期间发表的学术论文",
+    "攻读学位期间发表的学术论文",
+    "攻读学位期间的科研成果",
+    "攻读学位期间发表论文情况",
+    "个人简历",
+    "作者简介",
+    "原创性声明",
+    "独创性声明",
+    "学位论文版权使用授权书",
+    "原创性声明和使用授权书",
+    // 英文（normalize 时会 lowercase + 去空白，所以这里写小写无空白形式）
+    "abstract",
+    "keywords",
+    "keyword",
+    "contents",
+    "tableofcontents",
+    "conclusion",
+    "conclusions",
+    "references",
+    "bibliography",
+    "acknowledgement",
+    "acknowledgements",
+    "acknowledgment",
+    "acknowledgments",
+    "appendix",
+    "appendices",
+    "index",
+];
+
+/// 加载非编号章节白名单。
+///
+/// 解析与降级策略与 [`a_anti_ai::load_blackwords`] 完全对称：
+/// - 优先读 `thesis_dir/non_numbered_headings.txt`（每行一个，`#` 开头为注释）
+/// - 文件不存在 → 静默用内置 `EXEMPT_HEADING_NAMES`
+/// - 文件存在但不可读 → `tracing::warn!` 记录 + 降回内置
+///
+/// # 参数
+/// - `thesis_dir`：通常是 docx 同级的 `.thesis/` 目录，`None` 时直接返回内置列表。
+#[must_use]
+pub fn load_exempt_headings(thesis_dir: Option<&Path>) -> Vec<String> {
+    if let Some(dir) = thesis_dir {
+        let path = dir.join(EXEMPT_HEADINGS_FILENAME);
+        match std::fs::read_to_string(&path) {
+            Ok(content) => {
+                let names: Vec<String> = content
+                    .lines()
+                    .map(str::trim)
+                    .filter(|line| !line.is_empty() && !line.starts_with('#'))
+                    .map(str::to_owned)
+                    .collect();
+                if !names.is_empty() {
+                    return names;
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                // 文件不存在 → 用内置兜底
+            }
+            Err(e) => {
+                warn!(
+                    error = ?e,
+                    path = %path.display(),
+                    "non_numbered_headings.txt 不可读，降回内置白名单"
+                );
+            }
+        }
+    }
+    EXEMPT_HEADING_NAMES
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect()
+}
+
+/// 章节标题归一化：去掉所有 Unicode 空白（含全角空格 U+3000）+ ASCII 小写化。
+///
+/// 例：`"摘  要"` / `"摘　要"` / `"摘要"` 三者归一化后都是 `"摘要"`；
+/// `"ABSTRACT"` / `"Abstract"` / `"  abstract  "` 都归一化为 `"abstract"`。
+fn normalize_heading_text(text: &str) -> String {
+    text.chars()
+        .filter(|c| !c.is_whitespace())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+/// 判断段落文本是否匹配非编号章节白名单。
+///
+/// 匹配规则：段落归一化后**以**任一白名单条目（同样归一化）开头。
+/// 用前缀匹配是为了覆盖 `"附录 A 调查问卷"` / `"附录A"` / `"AppendixA"` 这类带后缀的标题。
+fn is_exempt_heading(text: &str, exempt: &[String]) -> bool {
+    let norm_text = normalize_heading_text(text);
+    if norm_text.is_empty() {
+        return false;
+    }
+    exempt.iter().any(|w| {
+        let norm_w = normalize_heading_text(w);
+        !norm_w.is_empty() && norm_text.starts_with(&norm_w)
+    })
+}
 
 /// 判断样式 ID 是否为标题样式。
 ///
@@ -120,16 +266,27 @@ fn is_reference_lvl_text(lvl_text: &str) -> bool {
 /// 当提供 `numbering_map` 时，额外校验：
 /// - 有 numPr 的标题段落，若其 numId 对应的 lvlText 不符合章节编号格式，也产生违规。
 ///
+/// **白名单豁免**：摘要 / ABSTRACT / 目录 / 结论 / 参考文献 / 致谢 / 附录 / 索引
+/// 等非编号章节按 GB/T 7714 与高校论文规范不参与正文自动编号，整段跳过本规则。
+/// 详见 [`EXEMPT_HEADING_NAMES`] 与 [`load_exempt_headings`]。
+///
 /// 参数 `numbering_map` 为 None 时行为等同于原有逻辑（保持兼容）。
+/// 参数 `exempt_headings` 传 `&[]` 时禁用白名单（行为退化到原有逻辑）。
 #[must_use]
 pub fn check_e57_chapter_numbering(
     paragraphs: &[DocParagraph],
     numbering_map: Option<&[NumIdLvlTexts]>,
+    exempt_headings: &[String],
 ) -> Vec<Violation> {
     let mut violations = Vec::new();
 
     for para in paragraphs {
         let is_heading = para.style_id.as_deref().is_some_and(is_heading_style);
+
+        // 白名单豁免：仅对标题样式生效（防止正文段落以"摘要"开头被误豁免）
+        if is_heading && is_exempt_heading(&para.text, exempt_headings) {
+            continue;
+        }
 
         let manual_prefix = looks_like_manual_chapter_number(&para.text);
 
@@ -292,7 +449,7 @@ mod tests {
     fn test_e57_heading_without_num_pr_is_violation() {
         // Heading1 样式但无 numPr → 违规
         let paras = vec![make_para(0, "引言", false, Some("Heading1"))];
-        let v = check_e57_chapter_numbering(&paras, None);
+        let v = check_e57_chapter_numbering(&paras, None, &[]);
         assert!(!v.is_empty(), "Heading1 无 numPr 应违规");
         assert_eq!(v[0].rule_id, RuleId::E57);
         assert_eq!(v[0].severity, Severity::Critical);
@@ -302,7 +459,7 @@ mod tests {
     fn test_e57_manual_prefix_without_num_pr_is_violation() {
         // 手动键入 "1. 引言" 且无 numPr → 违规
         let paras = vec![make_para(2, "1. 引言", false, None)];
-        let v = check_e57_chapter_numbering(&paras, None);
+        let v = check_e57_chapter_numbering(&paras, None, &[]);
         assert!(!v.is_empty(), "手动章节号段落无 numPr 应违规");
         assert_eq!(v[0].location, "body/p[2]");
     }
@@ -311,7 +468,7 @@ mod tests {
     fn test_e57_clean_heading_with_num_pr_passes() {
         // Heading1 + 有 numPr → 通过
         let paras = vec![make_para(0, "引言", true, Some("Heading1"))];
-        let v = check_e57_chapter_numbering(&paras, None);
+        let v = check_e57_chapter_numbering(&paras, None, &[]);
         assert!(v.is_empty(), "有 numPr 的标题不应违规");
     }
 
@@ -324,7 +481,7 @@ mod tests {
             false,
             None,
         )];
-        let v = check_e57_chapter_numbering(&paras, None);
+        let v = check_e57_chapter_numbering(&paras, None, &[]);
         assert!(v.is_empty(), "普通正文段落不应触发 E.5.7");
     }
 
@@ -332,7 +489,7 @@ mod tests {
     fn test_e57_two_level_manual_number_detected() {
         // "2.3 实验设计" 手动二级编号 → 违规
         let paras = vec![make_para(5, "2.3 实验设计", false, None)];
-        let v = check_e57_chapter_numbering(&paras, None);
+        let v = check_e57_chapter_numbering(&paras, None, &[]);
         assert!(!v.is_empty(), "二级手动章节号应触发 E.5.7");
     }
 
@@ -344,7 +501,7 @@ mod tests {
             num_id: 1,
             lvl_texts: vec!["%1.".to_owned()],
         }];
-        let v = check_e57_chapter_numbering(&paras, Some(&map));
+        let v = check_e57_chapter_numbering(&paras, Some(&map), &[]);
         assert!(v.is_empty(), "lvlText=%1. 应为合法章节编号，不违规");
     }
 
@@ -356,7 +513,7 @@ mod tests {
             num_id: 2,
             lvl_texts: vec!["一".to_owned()],
         }];
-        let v = check_e57_chapter_numbering(&paras, Some(&map));
+        let v = check_e57_chapter_numbering(&paras, Some(&map), &[]);
         assert!(!v.is_empty(), "lvlText='一' 不符合章节格式应违规");
         assert_eq!(v[0].rule_id, RuleId::E57);
     }
@@ -412,5 +569,192 @@ mod tests {
         assert!(!looks_like_manual_chapter_number("本研究"));
         assert!(!looks_like_manual_chapter_number("图1 示意图"));
         assert!(!looks_like_manual_chapter_number(""));
+    }
+
+    // ========================
+    // 非编号章节白名单测试（修复用户报告的 E.5.7 硬误报）
+    // ========================
+
+    fn builtin_exempt() -> Vec<String> {
+        load_exempt_headings(None)
+    }
+
+    #[test]
+    fn test_normalize_heading_text_handles_whitespace_and_case() {
+        // 中文版式空格：半角 / 全角 / 多个空格 — 归一化后都应等于无空格
+        assert_eq!(normalize_heading_text("摘  要"), "摘要");
+        assert_eq!(normalize_heading_text("摘　要"), "摘要");
+        assert_eq!(normalize_heading_text(" 摘要 "), "摘要");
+        // 英文大小写
+        assert_eq!(normalize_heading_text("ABSTRACT"), "abstract");
+        assert_eq!(normalize_heading_text("Abstract"), "abstract");
+        assert_eq!(normalize_heading_text("  abstract  "), "abstract");
+        // 混合
+        assert_eq!(
+            normalize_heading_text("Acknowledgements"),
+            "acknowledgements"
+        );
+    }
+
+    #[test]
+    fn test_is_exempt_heading_exact_match() {
+        let exempt = builtin_exempt();
+        assert!(is_exempt_heading("摘要", &exempt));
+        assert!(is_exempt_heading("致谢", &exempt));
+        assert!(is_exempt_heading("参考文献", &exempt));
+        assert!(is_exempt_heading("目录", &exempt));
+        assert!(is_exempt_heading("结论", &exempt));
+        // 英文
+        assert!(is_exempt_heading("ABSTRACT", &exempt));
+        assert!(is_exempt_heading("References", &exempt));
+        assert!(is_exempt_heading("Acknowledgements", &exempt));
+    }
+
+    #[test]
+    fn test_is_exempt_heading_whitespace_variants() {
+        let exempt = builtin_exempt();
+        // 用户截图里出现的版式空格写法
+        assert!(is_exempt_heading("摘  要", &exempt), "半角双空格应豁免");
+        assert!(is_exempt_heading("致　谢", &exempt), "全角空格应豁免");
+        assert!(is_exempt_heading("目  录", &exempt));
+    }
+
+    #[test]
+    fn test_is_exempt_heading_prefix_match_covers_appendix_suffix() {
+        let exempt = builtin_exempt();
+        // 附录 + 编号后缀的常见写法
+        assert!(is_exempt_heading("附录A", &exempt));
+        assert!(is_exempt_heading("附录 A 调查问卷", &exempt));
+        assert!(is_exempt_heading("Appendix A", &exempt));
+        // 攻读学位期间... 这类长标题
+        assert!(is_exempt_heading("攻读硕士学位期间发表的学术论文", &exempt));
+    }
+
+    #[test]
+    fn test_is_exempt_heading_normal_text_not_matched() {
+        let exempt = builtin_exempt();
+        // 正文段落不应被白名单命中
+        assert!(!is_exempt_heading("本研究采用对比实验方法", &exempt));
+        assert!(!is_exempt_heading("第一章 引言", &exempt));
+        assert!(!is_exempt_heading("1. 引言", &exempt));
+        assert!(!is_exempt_heading("", &exempt));
+    }
+
+    #[test]
+    fn test_e57_exempt_chinese_headings_with_heading_style_pass() {
+        // 用户报告的 6 段：摘要 / ABSTRACT / 目录 / 结论 / 参考文献 / 致谢
+        // Heading1 样式 + 无 numPr，按规范不应触发 E.5.7
+        let exempt = builtin_exempt();
+        let paras = vec![
+            make_para(0, "摘要", false, Some("Heading1")),
+            make_para(1, "ABSTRACT", false, Some("Heading1")),
+            make_para(2, "目录", false, Some("Heading1")),
+            make_para(3, "结论", false, Some("Heading1")),
+            make_para(4, "参考文献", false, Some("Heading1")),
+            make_para(5, "致谢", false, Some("Heading1")),
+        ];
+        let v = check_e57_chapter_numbering(&paras, None, &exempt);
+        assert!(
+            v.is_empty(),
+            "用户报告的 6 个非编号章节不应触发 E.5.7，实际：{v:?}"
+        );
+    }
+
+    #[test]
+    fn test_e57_exempt_with_whitespace_variants_pass() {
+        // 用户截图里实际文本含版式空格的写法
+        let exempt = builtin_exempt();
+        let paras = vec![
+            make_para(0, "摘  要", false, Some("Heading1")),
+            make_para(1, "目  录", false, Some("Heading1")),
+            make_para(2, "致　谢", false, Some("Heading1")),
+        ];
+        let v = check_e57_chapter_numbering(&paras, None, &exempt);
+        assert!(v.is_empty(), "版式空格变体不应触发 E.5.7：{v:?}");
+    }
+
+    #[test]
+    fn test_e57_appendix_with_suffix_passes() {
+        // "附录 A 调查问卷" Heading1 无 numPr → 豁免
+        let exempt = builtin_exempt();
+        let paras = vec![
+            make_para(0, "附录 A 调查问卷", false, Some("Heading1")),
+            make_para(1, "附录B", false, Some("Heading1")),
+        ];
+        let v = check_e57_chapter_numbering(&paras, None, &exempt);
+        assert!(v.is_empty(), "附录章节带后缀不应触发 E.5.7：{v:?}");
+    }
+
+    #[test]
+    fn test_e57_exempt_does_not_affect_real_chapter_heading() {
+        // 白名单不应误豁免真正的正文章节
+        let exempt = builtin_exempt();
+        let paras = vec![make_para(0, "第一章 引言", false, Some("Heading1"))];
+        let v = check_e57_chapter_numbering(&paras, None, &exempt);
+        assert!(!v.is_empty(), "正文章节'第一章 引言'仍应触发 E.5.7");
+    }
+
+    #[test]
+    fn test_e57_empty_exempt_list_disables_whitelist() {
+        // 传 &[] 时白名单失效，行为退化到原有逻辑 — 摘要 Heading1 仍报警
+        let paras = vec![make_para(0, "摘要", false, Some("Heading1"))];
+        let v = check_e57_chapter_numbering(&paras, None, &[]);
+        assert!(
+            !v.is_empty(),
+            "空白名单时应退化到原行为：摘要 Heading1 应触发 E.5.7"
+        );
+    }
+
+    #[test]
+    fn test_e57_normal_text_starting_with_exempt_word_not_falsely_exempted() {
+        // 正文段落"摘要部分应当...", 普通样式（非 Heading）, 不应被白名单豁免
+        // 同时也不应被 E.5.7 命中（普通段落本来就不在 E.5.7 范围）
+        let exempt = builtin_exempt();
+        let paras = vec![make_para(
+            0,
+            "摘要部分应当简明扼要地概括研究内容",
+            false,
+            None,
+        )];
+        let v = check_e57_chapter_numbering(&paras, None, &exempt);
+        assert!(v.is_empty(), "普通正文段落（非 Heading）本就不该触发 E.5.7");
+    }
+
+    #[test]
+    fn test_load_exempt_headings_none_returns_builtin() {
+        // None → 内置列表非空
+        let names = load_exempt_headings(None);
+        assert!(!names.is_empty(), "None 时应返回内置白名单");
+        assert!(names.iter().any(|w| w == "摘要"));
+        assert!(names.iter().any(|w| w == "参考文献"));
+        assert!(names.iter().any(|w| w == "致谢"));
+    }
+
+    #[test]
+    fn test_load_exempt_headings_missing_file_returns_builtin() {
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let names = load_exempt_headings(Some(tmp_dir.path()));
+        assert_eq!(
+            names.len(),
+            EXEMPT_HEADING_NAMES.len(),
+            "无配置文件时应返回内置列表"
+        );
+    }
+
+    #[test]
+    fn test_load_exempt_headings_from_file_overrides_builtin() {
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let path = tmp_dir.path().join(EXEMPT_HEADINGS_FILENAME);
+        std::fs::write(&path, "# 自定义白名单\n自定义前置章节\n\n自定义后置章节\n").unwrap();
+
+        let names = load_exempt_headings(Some(tmp_dir.path()));
+        assert_eq!(names.len(), 2, "应只解析出 2 个有效条目，实际：{names:?}");
+        assert!(names.contains(&"自定义前置章节".to_owned()));
+        assert!(names.contains(&"自定义后置章节".to_owned()));
+        // 内置列表中的"摘要"应已被覆盖
+        assert!(
+            !names.contains(&"摘要".to_owned()),
+            "用户文件存在且非空时应完全覆盖内置列表"
+        );
     }
 }
